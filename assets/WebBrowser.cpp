@@ -1019,7 +1019,43 @@ void on_record_toggle(GtkCellRendererToggle* renderer, gchar* path_str, gpointer
     gtk_tree_path_free(path);
 }
 
-// 历史、收藏和日志使用独立的勾选列；访问网页不由此列表提供。
+gboolean close_record_dialog_idle(gpointer) {
+    if (record_dialog)
+        gtk_dialog_response(GTK_DIALOG(record_dialog), GTK_RESPONSE_CLOSE);
+    return G_SOURCE_REMOVE;
+}
+
+gboolean on_record_button_press(GtkWidget* tree, GdkEventButton* event, gpointer) {
+    if (event->type != GDK_BUTTON_PRESS || event->button != 3) return FALSE;
+
+    GtkTreePath* path = nullptr;
+    if (!gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(tree), (int)event->x, (int)event->y,
+            &path, nullptr, nullptr, nullptr))
+        return FALSE;
+
+    GtkTreeModel* model = gtk_tree_view_get_model(GTK_TREE_VIEW(tree));
+    GtkTreeIter iter;
+    if (!gtk_tree_model_get_iter(model, &iter, path)) {
+        gtk_tree_path_free(path);
+        return FALSE;
+    }
+    gtk_tree_path_free(path);
+
+    gchar* url = nullptr;
+    gtk_tree_model_get(model, &iter, REC_URL, &url, -1);
+    if (url && *url) {
+        GtkWidget* wv = get_current_webview();
+        if (wv) {
+            webkit_web_view_load_uri(WEBKIT_WEB_VIEW(wv), url);
+            update_status_text(tr("正在访问", "Opening"), TRUE);
+        }
+        g_idle_add(close_record_dialog_idle, nullptr);
+    }
+    g_free(url);
+    return TRUE;
+}
+
+// 历史、收藏和日志使用独立的勾选列；历史与收藏支持右键在当前标签页访问。
 GtkWidget* create_record_tree(GtkListStore* store, bool log_mode) {
     GtkWidget* tree = gtk_tree_view_new_with_model(GTK_TREE_MODEL(store));
 
@@ -1059,6 +1095,9 @@ GtkWidget* create_record_tree(GtkListStore* store, bool log_mode) {
         gtk_tree_view_column_set_resizable(col, TRUE);
         gtk_tree_view_append_column(GTK_TREE_VIEW(tree), col);
     }
+    if (!log_mode)
+        g_signal_connect(tree, "button-press-event",
+                         G_CALLBACK(on_record_button_press), nullptr);
     return tree;
 }
 
