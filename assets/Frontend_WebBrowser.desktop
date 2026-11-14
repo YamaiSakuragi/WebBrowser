@@ -1,0 +1,8 @@
+[Desktop Entry]
+#文件类型=前端文件
+#放置路径=/data/data/com.termux/files/home/Desktop
+Type=Link
+Comment=WebBrowser
+Name=WebBrowser
+Icon=/data/data/com.termux/files/usr/share/icons/hicolor/64x64/apps/WebBrowser.png
+URL=/data/data/com.termux/files/usr/share/applications/Rearend_WebBrowser.desktop

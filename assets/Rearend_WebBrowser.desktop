@@ -1,0 +1,6 @@
+[Desktop Entry]
+#文件类型=后端文件
+#放置路径=/data/data/com.termux/files/usr/share/applications/
+Version=1.0
+Type=Application
+Exec=sh -c "chmod +x /data/data/com.termux/files/usr/bin/WebBrowser && /data/data/com.termux/files/usr/bin/WebBrowser"
