@@ -383,7 +383,7 @@ that material) supplement the terms of this License with terms:
     author attributions in that material or in the Appropriate Legal
     Notices displayed by works containing it; or
 
-    c) Prohibiting misrepresentation of the origin of that material, or
+    c) Prohibiting misrepresentation of the origin that material, or
     requiring that modified versions of such material be marked in
     reasonable ways as different from the original version; or
 
@@ -730,7 +730,7 @@ static std::vector<GtkTreeViewColumn*> record_selection_columns;
 static std::vector<std::string> log_lines;
 static std::string settings_file = base_dir + "/settings.conf";
 static std::string ui_theme = "light";
-static std::string ui_language = "zh";
+static std::string ui_language = "zh"; // "zh", "en", "zh-TW"
 static GtkCssProvider* app_css = nullptr;
 static bool app_css_installed = false;
 static GtkWidget* main_window = nullptr;
@@ -745,8 +745,20 @@ static GtkWidget* tab_close_button = nullptr;
 static bool javascript_enabled = true;
 static bool webgl_enabled = true;
 static bool media_requires_gesture = true;
-static double page_zoom_percent = 50.0; // 默认使用原版自适应缩放比例的 50%
+static double page_zoom_percent = 50.0;
 static bool zoom_setting_version_seen = false;
+
+// 语言翻译辅助函数支持 zh, zh-TW, en
+const char* tr(const char* zh, const char* en) {
+    if (ui_language == "en") return en;
+    return zh;
+}
+
+const char* tr_full(const char* zh, const char* zh_tw, const char* en) {
+    if (ui_language == "en") return en;
+    if (ui_language == "zh-TW") return zh_tw;
+    return zh;
+}
 
 GtkWidget* get_webview_from_page(GtkWidget* page) {
     if (!page) return nullptr;
@@ -777,8 +789,6 @@ void write_log(const std::string& msg) {
     }
 }
 
-const char* tr(const char* zh, const char* en);
-
 gboolean hide_status_callback(gpointer user_data) {
     gtk_widget_hide(status_overlay);
     status_hide_timer = 0;
@@ -803,7 +813,7 @@ void on_progress_changed(WebKitWebView* web_view, GParamSpec* pspec, gpointer us
         gtk_widget_show(progress_bar);
         gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(progress_bar), real_progress);
         if (status_overlay && !gtk_widget_get_visible(status_overlay))
-            update_status_text(tr("正在加载...", "Loading..."), FALSE);
+            update_status_text(tr_full("正在加载...", "正在載入...", "Loading..."), FALSE);
     }
 }
 
@@ -874,11 +884,7 @@ gboolean on_decide_policy(WebKitWebView* web_view, WebKitPolicyDecision* decisio
     return FALSE;
 }
 
-
 enum RecordColumns { REC_TEXT = 0, REC_URL = 1, REC_TIME = 2, REC_SELECTED = 3, REC_INDEX = 4 };
-
-bool is_english() { return ui_language == "en"; }
-const char* tr(const char* zh, const char* en) { return is_english() ? en : zh; }
 
 void apply_app_theme() {
     if (!app_css) app_css = gtk_css_provider_new();
@@ -922,20 +928,25 @@ void apply_app_theme() {
 }
 
 void apply_ui_language() {
-    if (btn_back) gtk_widget_set_tooltip_text(btn_back, tr("后退", "Back"));
-    if (btn_forward) gtk_widget_set_tooltip_text(btn_forward, tr("前进", "Forward"));
-    if (btn_refresh) gtk_widget_set_tooltip_text(btn_refresh, tr("刷新", "Reload"));
-    if (btn_history) gtk_widget_set_tooltip_text(btn_history, tr("历史记录", "History"));
-    if (btn_bookmark) gtk_widget_set_tooltip_text(btn_bookmark, tr("收藏夹", "Bookmarks"));
-    if (btn_settings) gtk_widget_set_tooltip_text(btn_settings, tr("设置", "Settings"));
-    if (url_entry) gtk_entry_set_placeholder_text(GTK_ENTRY(url_entry), tr("输入网址或搜索内容", "Enter a URL or search"));
-    if (tab_add_button) gtk_widget_set_tooltip_text(tab_add_button, tr("新建标签页", "New tab"));
-    if (tab_close_button) gtk_widget_set_tooltip_text(tab_close_button, tr("关闭当前标签页", "Close current tab"));
+    if (btn_back) gtk_widget_set_tooltip_text(btn_back, tr_full("后退", "後退", "Back"));
+    if (btn_forward) gtk_widget_set_tooltip_text(btn_forward, tr_full("前进", "前進", "Forward"));
+    if (btn_refresh) gtk_widget_set_tooltip_text(btn_refresh, tr_full("刷新", "重新整理", "Reload"));
+    if (btn_history) gtk_widget_set_tooltip_text(btn_history, tr_full("历史记录", "歷史記錄", "History"));
+    if (btn_bookmark) gtk_widget_set_tooltip_text(btn_bookmark, tr_full("收藏夹", "書籤", "Bookmarks"));
+    if (btn_settings) gtk_widget_set_tooltip_text(btn_settings, tr_full("设置", "設定", "Settings"));
+    if (url_entry) gtk_entry_set_placeholder_text(GTK_ENTRY(url_entry), tr_full("输入网址或搜索内容", "輸入網址或搜尋內容", "Enter a URL or search"));
+    if (tab_add_button) gtk_widget_set_tooltip_text(tab_add_button, tr_full("新建标签页", "新增分頁", "New tab"));
+    if (tab_close_button) gtk_widget_set_tooltip_text(tab_close_button, tr_full("关闭当前标签页", "關閉目前分頁", "Close current tab"));
     if (main_window) gtk_window_set_title(GTK_WINDOW(main_window), "WebBrowser");
     if (web_context) {
         const char* zh_languages[] = {"zh-CN", "zh", "en", NULL};
+        const char* zhtw_languages[] = {"zh-TW", "zh-HK", "zh", "en", NULL};
         const char* en_languages[] = {"en", "zh-CN", "zh", NULL};
-        webkit_web_context_set_preferred_languages(web_context, is_english() ? en_languages : zh_languages);
+        if (ui_language == "zh-TW") {
+            webkit_web_context_set_preferred_languages(web_context, zhtw_languages);
+        } else {
+            webkit_web_context_set_preferred_languages(web_context, ui_language == "en" ? en_languages : zh_languages);
+        }
     }
 }
 
@@ -945,7 +956,7 @@ void load_settings() {
     char key[128], value[256];
     while (fscanf(f, "%127[^=]=%255s\n", key, value) == 2) {
         if (strcmp(key, "theme") == 0 && (strcmp(value, "light") == 0 || strcmp(value, "dark") == 0)) ui_theme = value;
-        else if (strcmp(key, "language") == 0 && (strcmp(value, "zh") == 0 || strcmp(value, "en") == 0)) ui_language = value;
+        else if (strcmp(key, "language") == 0 && (strcmp(value, "zh") == 0 || strcmp(value, "en") == 0 || strcmp(value, "zh-TW") == 0)) ui_language = value;
         else if (strcmp(key, "javascript_enabled") == 0) javascript_enabled = strcmp(value, "1") == 0;
         else if (strcmp(key, "webgl_enabled") == 0) webgl_enabled = strcmp(value, "1") == 0;
         else if (strcmp(key, "media_requires_gesture") == 0) media_requires_gesture = strcmp(value, "1") == 0;
@@ -1047,7 +1058,7 @@ gboolean on_record_button_press(GtkWidget* tree, GdkEventButton* event, gpointer
         GtkWidget* wv = get_current_webview();
         if (wv) {
             webkit_web_view_load_uri(WEBKIT_WEB_VIEW(wv), url);
-            update_status_text(tr("正在访问", "Opening"), TRUE);
+            update_status_text(tr_full("正在访问", "正在存取", "Opening"), TRUE);
         }
         g_idle_add(close_record_dialog_idle, nullptr);
     }
@@ -1055,16 +1066,14 @@ gboolean on_record_button_press(GtkWidget* tree, GdkEventButton* event, gpointer
     return TRUE;
 }
 
-// 历史、收藏和日志使用独立的勾选列；历史与收藏支持右键在当前标签页访问。
 GtkWidget* create_record_tree(GtkListStore* store, bool log_mode) {
     GtkWidget* tree = gtk_tree_view_new_with_model(GTK_TREE_MODEL(store));
 
-    // 历史、收藏、日志均保留原版勾选列；不提供单独的“访问”操作。
     {
         GtkCellRenderer* toggle = gtk_cell_renderer_toggle_new();
         const int selected_col = log_mode ? 1 : REC_SELECTED;
         GtkTreeViewColumn* select_col = gtk_tree_view_column_new_with_attributes(
-            tr("选择", "Select"), toggle, "active", selected_col, NULL);
+            tr_full("选择", "選擇", "Select"), toggle, "active", selected_col, NULL);
         gtk_tree_view_append_column(GTK_TREE_VIEW(tree), select_col);
         record_selection_columns.push_back(select_col);
         g_signal_connect(toggle, "toggled", G_CALLBACK(on_record_toggle), store);
@@ -1074,7 +1083,7 @@ GtkWidget* create_record_tree(GtkListStore* store, bool log_mode) {
     g_object_set(text, "ellipsize", PANGO_ELLIPSIZE_END, "ellipsize-set", TRUE,
                  "width-chars", 20, "max-width-chars", 34, NULL);
     GtkTreeViewColumn* col = gtk_tree_view_column_new_with_attributes(
-        log_mode ? tr("日志内容", "Log entry") : tr("网页标题", "Page title"),
+        log_mode ? tr_full("日志内容", "日誌內容", "Log entry") : tr_full("网页标题", "網頁標題", "Page title"),
         text, "text", 0, NULL);
     gtk_tree_view_column_set_expand(col, TRUE);
     gtk_tree_view_column_set_resizable(col, TRUE);
@@ -1084,14 +1093,14 @@ GtkWidget* create_record_tree(GtkListStore* store, bool log_mode) {
         text = gtk_cell_renderer_text_new();
         g_object_set(text, "ellipsize", PANGO_ELLIPSIZE_END, "ellipsize-set", TRUE,
                      "width-chars", 22, "max-width-chars", 38, NULL);
-        col = gtk_tree_view_column_new_with_attributes(tr("网址", "Address"), text, "text", REC_URL, NULL);
+        col = gtk_tree_view_column_new_with_attributes(tr_full("网址", "網址", "Address"), text, "text", REC_URL, NULL);
         gtk_tree_view_column_set_expand(col, TRUE);
         gtk_tree_view_column_set_resizable(col, TRUE);
         gtk_tree_view_append_column(GTK_TREE_VIEW(tree), col);
         text = gtk_cell_renderer_text_new();
         g_object_set(text, "ellipsize", PANGO_ELLIPSIZE_END, "ellipsize-set", TRUE,
                      "width-chars", 17, "max-width-chars", 22, NULL);
-        col = gtk_tree_view_column_new_with_attributes(tr("时间", "Time"), text, "text", REC_TIME, NULL);
+        col = gtk_tree_view_column_new_with_attributes(tr_full("时间", "時間", "Time"), text, "text", REC_TIME, NULL);
         gtk_tree_view_column_set_resizable(col, TRUE);
         gtk_tree_view_append_column(GTK_TREE_VIEW(tree), col);
     }
@@ -1103,7 +1112,7 @@ GtkWidget* create_record_tree(GtkListStore* store, bool log_mode) {
 
 void set_record_multi_mode(bool enabled) {
     record_multi_mode = enabled;
-    if (record_multi_button) gtk_button_set_label(GTK_BUTTON(record_multi_button), enabled ? tr("退出多选", "Exit selection") : tr("多选", "Select"));
+    if (record_multi_button) gtk_button_set_label(GTK_BUTTON(record_multi_button), enabled ? tr_full("退出多选", "退出多選", "Exit selection") : tr_full("多选", "多選", "Select"));
     if (record_select_all_button) gtk_widget_set_visible(record_select_all_button, enabled);
     if (record_invert_button) gtk_widget_set_visible(record_invert_button, enabled);
     if (record_delete_button) {
@@ -1148,7 +1157,7 @@ void on_record_invert(GtkWidget*, gpointer) {
         gboolean selected = FALSE;
         const int selected_col = record_selected_column(GTK_TREE_MODEL(store));
         gtk_tree_model_get(GTK_TREE_MODEL(store), &iter, selected_col, &selected, -1);
-        gtk_list_store_set(store, &iter, selected_col, !selected, -1);
+        gtk_list_store_set(GTK_LIST_STORE(store), &iter, selected_col, !selected, -1);
         valid = gtk_tree_model_iter_next(GTK_TREE_MODEL(store), &iter);
     }
 }
@@ -1180,12 +1189,12 @@ void on_record_copy_selected(GtkWidget*, gpointer) {
         valid = gtk_tree_model_iter_next(GTK_TREE_MODEL(store), &iter);
     }
     if (copied.empty()) {
-        update_status_text(tr("请先勾选要复制的项目", "Select items to copy first"), TRUE);
+        update_status_text(tr_full("请先勾选要复制的项目", "請先勾選要複製的項目", "Select items to copy first"), TRUE);
         return;
     }
     GtkClipboard* clipboard = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
     gtk_clipboard_set_text(clipboard, copied.c_str(), (gint)copied.size());
-    update_status_text(tr("已复制选中内容", "Selected items copied"), TRUE);
+    update_status_text(tr_full("已复制选中内容", "已複製選中內容", "Selected items copied"), TRUE);
 }
 
 void on_record_delete_selected(GtkWidget*, gpointer) {
@@ -1193,7 +1202,7 @@ void on_record_delete_selected(GtkWidget*, gpointer) {
     GtkListStore* store = current_record_store();
     if (!store) return;
     if (page == 2) {
-        update_status_text(tr("Cookie 目前支持复制选中内容，删除请使用清空", "Cookies can be copied selectively; use Clear to remove them"), TRUE);
+        update_status_text(tr_full("Cookie 目前支持复制选中内容，删除请使用清空", "Cookie 目前支援複製選中內容，刪除請使用清空", "Cookies can be copied selectively; use Clear to remove them"), TRUE);
         return;
     }
     std::vector<int> indices;
@@ -1248,11 +1257,14 @@ void on_history(GtkWidget* w, gpointer d) {
     record_multi_mode = false;
     record_selection_columns.clear();
 
-    record_dialog = gtk_dialog_new_with_buttons("Browsing Data",
-        GTK_WINDOW(gtk_widget_get_toplevel(w)),
-        (GtkDialogFlags)(GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT),
-        tr("关闭", "Close"), GTK_RESPONSE_CLOSE, NULL);
-    gtk_window_set_default_size(GTK_WINDOW(record_dialog), 680, 420);
+    // 修复：不使用无按钮的对话框，而是手动创建一个标准 GtkDialog，并将所有按钮（包括多选操作和关闭按钮）放入同一个底部工具栏容器中，确保高度与对齐完美一致
+    record_dialog = gtk_dialog_new();
+    gtk_window_set_title(GTK_WINDOW(record_dialog), tr_full("浏览数据", "瀏覽資料", "Browsing Data"));
+    gtk_window_set_transient_for(GTK_WINDOW(record_dialog), GTK_WINDOW(gtk_widget_get_toplevel(w)));
+    gtk_window_set_modal(GTK_WINDOW(record_dialog), TRUE);
+    gtk_window_set_destroy_with_parent(GTK_WINDOW(record_dialog), TRUE);
+    gtk_window_set_default_size(GTK_WINDOW(record_dialog), 680, 430);
+
     GtkWidget* content = gtk_dialog_get_content_area(GTK_DIALOG(record_dialog));
     record_notebook = gtk_notebook_new();
     gtk_box_pack_start(GTK_BOX(content), record_notebook, TRUE, TRUE, 0);
@@ -1261,32 +1273,32 @@ void on_history(GtkWidget* w, gpointer d) {
     history_store = gtk_list_store_new(5, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_BOOLEAN, G_TYPE_INT);
     GtkWidget* tree1 = create_record_tree(history_store, false);
     gtk_container_add(GTK_CONTAINER(scroll1), tree1);
-    gtk_notebook_append_page(GTK_NOTEBOOK(record_notebook), scroll1, gtk_label_new(tr("访问记录", "History")));
+    gtk_notebook_append_page(GTK_NOTEBOOK(record_notebook), scroll1, gtk_label_new(tr_full("访问记录", "訪問記錄", "History")));
     refresh_history_ui();
 
     GtkWidget* scroll2 = gtk_scrolled_window_new(NULL, NULL);
     bookmark_store = gtk_list_store_new(5, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_BOOLEAN, G_TYPE_INT);
     GtkWidget* tree2 = create_record_tree(bookmark_store, false);
     gtk_container_add(GTK_CONTAINER(scroll2), tree2);
-    gtk_notebook_append_page(GTK_NOTEBOOK(record_notebook), scroll2, gtk_label_new(tr("网页收藏", "Bookmarks")));
+    gtk_notebook_append_page(GTK_NOTEBOOK(record_notebook), scroll2, gtk_label_new(tr_full("网页收藏", "網頁收藏", "Bookmarks")));
     refresh_bookmark_ui();
 
     GtkWidget* scroll3 = gtk_scrolled_window_new(NULL, NULL);
     cookie_store = gtk_list_store_new(4, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_BOOLEAN, G_TYPE_INT);
     GtkWidget* tree3 = gtk_tree_view_new_with_model(GTK_TREE_MODEL(cookie_store));
     GtkCellRenderer* cookie_toggle = gtk_cell_renderer_toggle_new();
-    GtkTreeViewColumn* cookie_select_col = gtk_tree_view_column_new_with_attributes(tr("选择", "Select"), cookie_toggle, "active", 2, NULL);
+    GtkTreeViewColumn* cookie_select_col = gtk_tree_view_column_new_with_attributes(tr_full("选择", "選擇", "Select"), cookie_toggle, "active", 2, NULL);
     gtk_tree_view_append_column(GTK_TREE_VIEW(tree3), cookie_select_col);
     record_selection_columns.push_back(cookie_select_col);
     g_signal_connect(cookie_toggle, "toggled", G_CALLBACK(on_record_toggle), cookie_store);
     GtkCellRenderer* cr = gtk_cell_renderer_text_new();
     g_object_set(cr, "ellipsize", PANGO_ELLIPSIZE_END, "ellipsize-set", TRUE, "width-chars", 22, "max-width-chars", 36, NULL);
-    GtkTreeViewColumn* cookie_domain_col = gtk_tree_view_column_new_with_attributes(tr("域名", "Domain"), cr, "text", 0, NULL);
+    GtkTreeViewColumn* cookie_domain_col = gtk_tree_view_column_new_with_attributes(tr_full("域名", "網域", "Domain"), cr, "text", 0, NULL);
     gtk_tree_view_column_set_expand(cookie_domain_col, TRUE);
     gtk_tree_view_append_column(GTK_TREE_VIEW(tree3), cookie_domain_col);
     cr = gtk_cell_renderer_text_new();
     g_object_set(cr, "ellipsize", PANGO_ELLIPSIZE_END, "ellipsize-set", TRUE, "width-chars", 18, "max-width-chars", 30, NULL);
-    GtkTreeViewColumn* cookie_name_col = gtk_tree_view_column_new_with_attributes(tr("名称", "Name"), cr, "text", 1, NULL);
+    GtkTreeViewColumn* cookie_name_col = gtk_tree_view_column_new_with_attributes(tr_full("名称", "名稱", "Name"), cr, "text", 1, NULL);
     gtk_tree_view_column_set_expand(cookie_name_col, TRUE);
     gtk_tree_view_append_column(GTK_TREE_VIEW(tree3), cookie_name_col);
     gtk_container_add(GTK_CONTAINER(scroll3), tree3);
@@ -1297,7 +1309,7 @@ void on_history(GtkWidget* w, gpointer d) {
     log_store = gtk_list_store_new(3, G_TYPE_STRING, G_TYPE_BOOLEAN, G_TYPE_INT);
     GtkWidget* log_tree = create_record_tree(log_store, true);
     gtk_container_add(GTK_CONTAINER(scroll4), log_tree);
-    gtk_notebook_append_page(GTK_NOTEBOOK(record_notebook), scroll4, gtk_label_new(tr("日志", "Logs")));
+    gtk_notebook_append_page(GTK_NOTEBOOK(record_notebook), scroll4, gtk_label_new(tr_full("日志", "日誌", "Logs")));
     log_lines.clear();
     FILE* lf = fopen(log_file.c_str(), "r");
     if (lf) {
@@ -1311,24 +1323,47 @@ void on_history(GtkWidget* w, gpointer d) {
     }
     refresh_log_ui();
 
-    GtkWidget* fixed_toolbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
-    gtk_container_set_border_width(GTK_CONTAINER(fixed_toolbar), 8);
-    record_multi_button = gtk_button_new_with_label(tr("多选", "Select"));
-    record_select_all_button = gtk_button_new_with_label(tr("全选", "Select all"));
-    record_invert_button = gtk_button_new_with_label(tr("反选", "Invert"));
-    record_delete_button = gtk_button_new_with_label(tr("删除选中", "Delete selected"));
-    record_copy_button = gtk_button_new_with_label(tr("复制选中", "Copy selected"));
-    gtk_box_pack_start(GTK_BOX(fixed_toolbar), record_multi_button, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(fixed_toolbar), record_select_all_button, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(fixed_toolbar), record_invert_button, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(fixed_toolbar), record_delete_button, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(fixed_toolbar), record_copy_button, FALSE, FALSE, 0);
-    gtk_box_pack_end(GTK_BOX(content), fixed_toolbar, FALSE, FALSE, 0);
+    // 修复控件对齐：使用单一的 GtkBox 统合左侧多选按钮组与右侧关闭按钮，保证它们在同一水平线和高度上
+    GtkWidget* bottom_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_container_set_border_width(GTK_CONTAINER(bottom_box), 8);
+
+    GtkWidget* left_toolbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    record_multi_button = gtk_button_new_with_label(tr_full("多选", "多選", "Select"));
+    record_select_all_button = gtk_button_new_with_label(tr_full("全选", "全選", "Select all"));
+    record_invert_button = gtk_button_new_with_label(tr_full("反选", "反選", "Invert"));
+    record_delete_button = gtk_button_new_with_label(tr_full("删除选中", "刪除選中", "Delete selected"));
+    record_copy_button = gtk_button_new_with_label(tr_full("复制选中", "複製選中", "Copy selected"));
+    
+    gtk_box_pack_start(GTK_BOX(left_toolbar), record_multi_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(left_toolbar), record_select_all_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(left_toolbar), record_invert_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(left_toolbar), record_delete_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(left_toolbar), record_copy_button, FALSE, FALSE, 0);
+
+    GtkWidget* close_button = gtk_button_new_with_label(tr_full("关闭", "關閉", "Close"));
+    // 让关闭按钮响应对话框关闭事件
+    g_signal_connect_swapped(close_button, "clicked", G_CALLBACK(+[](GtkWidget* dlg){
+        gtk_dialog_response(GTK_DIALOG(dlg), GTK_RESPONSE_CLOSE);
+    }), record_dialog);
+
+    gtk_box_pack_start(GTK_BOX(bottom_box), left_toolbar, FALSE, FALSE, 0);
+    // 用一个空的 expand 盒子把关闭按钮推到最右侧
+    GtkWidget* spacer = gtk_label_new("");
+    gtk_widget_set_hexpand(spacer, TRUE);
+    gtk_box_pack_start(GTK_BOX(bottom_box), spacer, TRUE, TRUE, 0);
+    gtk_box_pack_end(GTK_BOX(bottom_box), close_button, FALSE, FALSE, 0);
+
+    // 将统一的底部栏放入对话框自带的 action_area 中，消除高度和容器错位
+    GtkWidget* action_area = gtk_dialog_get_action_area(GTK_DIALOG(record_dialog));
+    // 清除 action_area 默认边距并放入我们的统一容器
+    gtk_container_add(GTK_CONTAINER(action_area), bottom_box);
+
     g_signal_connect(record_multi_button, "clicked", G_CALLBACK(on_record_multi), NULL);
     g_signal_connect(record_select_all_button, "clicked", G_CALLBACK(on_record_select_all), NULL);
     g_signal_connect(record_invert_button, "clicked", G_CALLBACK(on_record_invert), NULL);
     g_signal_connect(record_delete_button, "clicked", G_CALLBACK(on_record_delete_selected), NULL);
     g_signal_connect(record_copy_button, "clicked", G_CALLBACK(on_record_copy_selected), NULL);
+    
     g_signal_connect(record_notebook, "switch-page", G_CALLBACK(+[](GtkNotebook*, GtkWidget*, guint page, gpointer) {
         set_record_multi_mode(false);
         const gboolean supports_selection = (page >= 0 && page <= 3);
@@ -1338,6 +1373,7 @@ void on_history(GtkWidget* w, gpointer d) {
         if (record_delete_button) gtk_widget_set_visible(record_delete_button, supports_selection && record_multi_mode);
         if (record_copy_button) gtk_widget_set_visible(record_copy_button, supports_selection && record_multi_mode);
     }), NULL);
+    
     set_record_multi_mode(false);
     gtk_widget_hide(record_multi_button);
     gtk_widget_hide(record_select_all_button);
@@ -1349,6 +1385,7 @@ void on_history(GtkWidget* w, gpointer d) {
     set_record_multi_mode(false);
     gtk_dialog_run(GTK_DIALOG(record_dialog));
     gtk_widget_destroy(record_dialog);
+    
     record_dialog = nullptr;
     record_notebook = nullptr;
     record_selection_columns.clear();
@@ -1371,7 +1408,14 @@ void on_bookmark(GtkWidget* w, gpointer d) {
         
         for (const auto& item : bookmark_list) {
             if (item.url == uri) {
-                GtkWidget* dialog = gtk_message_dialog_new(GTK_WINDOW(gtk_widget_get_toplevel(w)), (GtkDialogFlags)GTK_DIALOG_MODAL, GTK_MESSAGE_INFO, GTK_BUTTONS_OK, "该页面已收藏！");
+                GtkWidget* dialog = gtk_message_dialog_new(
+                    GTK_WINDOW(gtk_widget_get_toplevel(w)), 
+                    (GtkDialogFlags)GTK_DIALOG_MODAL, 
+                    GTK_MESSAGE_INFO, 
+                    GTK_BUTTONS_OK, 
+                    "%s", 
+                    tr_full("该页面已收藏！", "該頁面已收藏！", "This page is already bookmarked!")
+                );
                 gtk_dialog_run(GTK_DIALOG(dialog));
                 gtk_widget_destroy(dialog);
                 return;
@@ -1379,7 +1423,14 @@ void on_bookmark(GtkWidget* w, gpointer d) {
         }
         bookmark_list.push_back({time_buf, t, uri});
         write_records(bookmark_file, bookmark_list);
-        GtkWidget* dialog = gtk_message_dialog_new(GTK_WINDOW(gtk_widget_get_toplevel(w)), (GtkDialogFlags)GTK_DIALOG_MODAL, GTK_MESSAGE_INFO, GTK_BUTTONS_OK, "收藏成功！");
+        GtkWidget* dialog = gtk_message_dialog_new(
+            GTK_WINDOW(gtk_widget_get_toplevel(w)), 
+            (GtkDialogFlags)GTK_DIALOG_MODAL, 
+            GTK_MESSAGE_INFO, 
+            GTK_BUTTONS_OK, 
+            "%s", 
+            tr_full("收藏成功！", "收藏成功！", "Bookmark added successfully!")
+        );
         gtk_dialog_run(GTK_DIALOG(dialog));
         gtk_widget_destroy(dialog);
     }
@@ -1415,19 +1466,19 @@ void on_load_changed(WebKitWebView* web_view, WebKitLoadEvent load_event, gpoint
 
     if (load_event == WEBKIT_LOAD_STARTED) {
         if (is_foreground) {
-            update_status_text(tr("正在连接...", "Connecting..."), FALSE);
+            update_status_text(tr_full("正在连接...", "正在連線...", "Connecting..."), FALSE);
             gtk_widget_show(progress_bar);
             gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(progress_bar), 0.0);
         }
     } else if (load_event == WEBKIT_LOAD_REDIRECTED) {
-        if (is_foreground) update_status_text(tr("正在重定向...", "Redirecting..."), FALSE);
+        if (is_foreground) update_status_text(tr_full("正在重定向...", "正在重新導向...", "Redirecting..."), FALSE);
     } else if (load_event == WEBKIT_LOAD_COMMITTED) {
-        if (is_foreground) update_status_text(tr("等待响应...", "Waiting for response..."), FALSE);
+        if (is_foreground) update_status_text(tr_full("等待响应...", "等待回應...", "Waiting for response..."), FALSE);
     } else if (load_event == WEBKIT_LOAD_FINISHED) {
         if (is_foreground) {
             gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(progress_bar), 1.0);
             g_timeout_add(450, hide_progress_if_idle, NULL);
-            update_status_text(tr("完成", "Done"), TRUE);
+            update_status_text(tr_full("完成", "完成", "Done"), TRUE);
         }
         
         const gchar* uri = webkit_web_view_get_uri(web_view);
@@ -1441,7 +1492,6 @@ void on_load_changed(WebKitWebView* web_view, WebKitLoadEvent load_event, gpoint
     }
 }
 
-
 std::string html_escape(const char* value) {
     gchar* escaped = g_markup_escape_text(value ? value : "", -1);
     std::string result = escaped ? escaped : "";
@@ -1450,32 +1500,32 @@ std::string html_escape(const char* value) {
 }
 
 std::string error_reason(GError* error) {
-    if (!error) return tr("未知网络错误，请稍后重试。", "An unknown network error occurred. Please try again.");
+    if (!error) return tr_full("未知网络错误，请稍后重试。", "未知網路錯誤，請稍後重試。", "An unknown network error occurred. Please try again.");
     if (error->domain == WEBKIT_NETWORK_ERROR) {
         switch (error->code) {
-            case WEBKIT_NETWORK_ERROR_FAILED: return tr("无法连接到服务器。请检查网络连接、代理或服务器状态后重试。", "Could not connect to the server. Check your connection, proxy, or server status and try again.");
-            case WEBKIT_NETWORK_ERROR_TRANSPORT: return tr("与服务器通信时连接中断。请检查网络后重试。", "The connection was interrupted while communicating with the server. Check your network and try again.");
-            case WEBKIT_NETWORK_ERROR_FILE_DOES_NOT_EXIST: return tr("服务器上的请求资源不存在，请检查网址是否正确。", "The requested resource does not exist on the server. Check the URL.");
-            case WEBKIT_NETWORK_ERROR_UNKNOWN_PROTOCOL: return tr("浏览器无法识别该网址协议。请检查网址是否以 http:// 或 https:// 开头。", "The browser does not recognize this URL scheme. Check that it uses http:// or https://.");
+            case WEBKIT_NETWORK_ERROR_FAILED: return tr_full("无法连接到服务器。请检查网络连接、代理或服务器状态后重试。", "無法連線到伺服器。請檢查網路連線、代理或伺服器狀態後重試。", "Could not connect to the server. Check your connection, proxy, or server status and try again.");
+            case WEBKIT_NETWORK_ERROR_TRANSPORT: return tr_full("与服务器通信时连接中断。请检查网络后重试。", "與伺服器通訊時連線中斷。請檢查網路後重試。", "The connection was interrupted while communicating with the server. Check your network and try again.");
+            case WEBKIT_NETWORK_ERROR_FILE_DOES_NOT_EXIST: return tr_full("服务器上的请求资源不存在，请检查网址是否正确。", "伺服器上的請求資源不存在，請檢查網址是否正確。", "The requested resource does not exist on the server. Check the URL.");
+            case WEBKIT_NETWORK_ERROR_UNKNOWN_PROTOCOL: return tr_full("浏览器无法识别该网址协议。请检查网址是否以 http:// 或 https:// 开头。", "瀏覽器無法識別該網址協定。請檢查網址是否以 http:// 或 https:// 開頭。", "The browser does not recognize this URL scheme. Check that it uses http:// or https://.");
             default: break;
         }
     }
     if (error->domain == WEBKIT_POLICY_ERROR)
-        return tr("浏览器策略阻止了此次访问，可能是网址、证书或页面权限问题。", "The browser policy blocked this navigation. The URL, certificate, or page permissions may be responsible.");
+        return tr_full("浏览器策略阻止了此次访问，可能是网址、证书或页面权限问题。", "瀏覽器策略阻止了此次存取，可能是網址、憑證或頁面權限問題。", "The browser policy blocked this navigation. The URL, certificate, or page permissions may be responsible.");
     if (error->domain == G_IO_ERROR && error->code == G_IO_ERROR_TIMED_OUT)
-        return tr("网页加载超时。服务器没有在规定时间内响应，请稍后重试。", "The page load timed out. The server did not respond in time. Please try again later.");
+        return tr_full("网页加载超时。服务器没有在规定时间内响应，请稍后重试。", "網頁載入逾時。伺服器沒有在規定時間內回應，請稍後重試。", "The page load timed out. The server did not respond in time. Please try again later.");
     std::string message = error->message ? error->message : "";
     std::string lower = message;
     for (char& c : lower) c = (char)g_ascii_tolower(c);
     if (lower.find("resolve") != std::string::npos || lower.find("dns") != std::string::npos || lower.find("name or service not known") != std::string::npos)
-        return tr("无法解析服务器地址。请检查网址拼写、DNS 或网络连接。", "The server address could not be resolved. Check the URL, DNS, or network connection.");
+        return tr_full("无法解析服务器地址。请检查网址拼写、DNS 或网络连接。", "無法解析伺服器位址。請檢查網址拼字、DNS 或網路連線。", "The server address could not be resolved. Check the URL, DNS, or network connection.");
     if (lower.find("refused") != std::string::npos || message.find("拒绝") != std::string::npos)
-        return tr("服务器拒绝了连接请求。服务器可能暂时不可用，或没有开放对应端口。", "The server refused the connection. It may be unavailable or not accepting connections on that port.");
+        return tr_full("服务器拒绝了连接请求。服务器可能暂时不可用，或没有开放对应端口。", "伺服器拒絕了連線請求。伺服器可能暫時不可用，或沒有開放對應連接埠。", "The server refused the connection. It may be unavailable or not accepting connections on that port.");
     if (lower.find("timed out") != std::string::npos || lower.find("timeout") != std::string::npos)
-        return tr("网页加载超时。请检查网络连接，或稍后重新加载。", "The page load timed out. Check your connection or reload later.");
+        return tr_full("网页加载超时。请检查网络连接，或稍后重新加载。", "網頁載入逾時。請檢查網路連線，或稍後重新載入。", "The page load timed out. Check your connection or reload later.");
     if (lower.find("certificate") != std::string::npos || lower.find("tls") != std::string::npos || lower.find("ssl") != std::string::npos)
-        return tr("安全连接建立失败，可能是网站证书无效或设备时间不正确。", "A secure connection could not be established. The site certificate may be invalid or the device clock may be incorrect.");
-    return tr("网页无法完成加载。请检查网络连接、网址是否正确，或稍后重试。", "The page could not be loaded. Check your network connection and URL, or try again later.");
+        return tr_full("安全连接建立失败，可能是网站证书无效或设备时间不正确。", "安全連線建立失敗，可能是網站憑證無效或裝置時間不正確。", "A secure connection could not be established. The site certificate may be invalid or the device clock may be incorrect.");
+    return tr_full("网页无法完成加载。请检查网络连接、网址是否正确，或稍后重试。", "網頁無法完成載入。請檢查網路連線、網址是否正確，或稍後重試。", "The page could not be loaded. Check your network connection and URL, or try again later.");
 }
 
 std::string error_code_name(GError* error) {
@@ -1519,7 +1569,7 @@ gboolean on_load_failed(WebKitWebView* web_view, WebKitLoadEvent load_event, con
     const std::string panel = dark ? "#303946" : "#e9edf4";
     std::string html =
         "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-        "<title>" + std::string(tr("网页无法访问", "This site can’t be reached")) + "</title><style>"
+        "<title>" + std::string(tr_full("网页无法访问", "網頁無法存取", "This site can’t be reached")) + "</title><style>"
         "*{box-sizing:border-box}html,body{min-height:100%;margin:0;font-family:Arial,'Noto Sans CJK SC',sans-serif;background:" + bg + ";color:" + fg + ";}"
         "body{padding:clamp(18px,5vw,42px)}.wrap{width:100%;max-width:780px;margin:clamp(12px,7vh,64px) auto 32px;}"
         ".x{color:#e53935;font-size:64px;font-weight:700;line-height:1;margin:0 0 18px 0;}"
@@ -1532,17 +1582,17 @@ gboolean on_load_failed(WebKitWebView* web_view, WebKitLoadEvent load_event, con
         ".raw{margin-top:8px;color:" + muted + ";white-space:pre-wrap;}"
         "@media(max-width:480px){body{padding:18px}.wrap{margin:18px auto}.x{font-size:54px}p{font-size:15px}}"
         "</style></head><body><main class='wrap'>"
-        "<div class='x'>×</div><h1>" + std::string(tr("网页无法访问", "This site can’t be reached")) + "</h1>"
+        "<div class='x'>×</div><h1>" + std::string(tr_full("网页无法访问", "網頁無法存取", "This site can’t be reached")) + "</h1>"
         "<p>" + escaped_reason + "</p>"
         "<div class='url'><a target='_blank' rel='noopener' href='" + escaped_uri + "'>" + escaped_uri + "</a></div>"
-        "<section class='details'><div class='detail-title'>" + std::string(tr("错误详情", "Error details")) + "</div>"
-        "<div class='code'>" + std::string(tr("错误码：", "Error code: ")) + escaped_code + "</div>"
+        "<section class='details'><div class='detail-title'>" + std::string(tr_full("错误详情", "錯誤詳情", "Error details")) + "</div>"
+        "<div class='code'>" + std::string(tr_full("错误码：", "錯誤碼：", "Error code: ")) + escaped_code + "</div>"
         "<div class='raw'>" + escaped_detail + "</div></section></main></body></html>";
 
     write_log("加载失败: " + std::string(uri ? uri : "未知网址") + " 错误: " + (error && error->message ? error->message : "unknown"));
     if (GTK_WIDGET(web_view) == get_current_webview()) {
         gtk_widget_hide(progress_bar);
-        update_status_text(tr("网页无法访问", "Page unavailable"), FALSE);
+        update_status_text(tr_full("网页无法访问", "網頁無法存取", "Page unavailable"), FALSE);
     }
     webkit_web_view_load_alternate_html(web_view, html.c_str(), uri, NULL);
     return TRUE;
@@ -1562,8 +1612,6 @@ void on_url_activate(GtkWidget* widget, gpointer data) {
     if (webview) webkit_web_view_load_uri(WEBKIT_WEB_VIEW(webview), target.c_str());
 }
 
-// Preserve the original adaptive zoom formula: viewport width / 1366, clamped to 0.3..1.0.
-// The user preference multiplies that original ratio; 100% is the exact original behavior.
 void apply_page_zoom(GtkWidget* view) {
     if (!view || !WEBKIT_IS_WEB_VIEW(view)) return;
     const gint width = gtk_widget_get_allocated_width(view);
@@ -1620,20 +1668,19 @@ void add_tab(const char* url) {
     g_signal_connect(webview, "notify::estimated-load-progress", G_CALLBACK(on_progress_changed), NULL);
     g_signal_connect(webview, "decide-policy", G_CALLBACK(on_decide_policy), NULL);
     
-    
     g_signal_connect(webview, "notify::title", G_CALLBACK(+[](GtkWidget* w, GParamSpec*, gpointer){
         const gchar* title = webkit_web_view_get_title(WEBKIT_WEB_VIEW(w));
         GtkWidget* page_widget = gtk_widget_get_parent(w);
         gint page = page_widget ? gtk_notebook_page_num(GTK_NOTEBOOK(notebook), page_widget) : -1;
         if (page >= 0) gtk_notebook_set_tab_label_text(GTK_NOTEBOOK(notebook), page_widget,
-            (title && *title) ? title : tr("新标签页", "New tab"));
+            (title && *title) ? title : tr_full("新标签页", "新分頁", "New tab"));
     }), NULL);
 
     GtkWidget* vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_box_pack_start(GTK_BOX(vbox), webview, TRUE, TRUE, 0);
     gtk_widget_show_all(vbox);
 
-    int page = gtk_notebook_append_page(GTK_NOTEBOOK(notebook), vbox, gtk_label_new(tr("新标签页", "New tab")));
+    int page = gtk_notebook_append_page(GTK_NOTEBOOK(notebook), vbox, gtk_label_new(tr_full("新标签页", "新分頁", "New tab")));
     gtk_widget_show_all(vbox);
     gtk_widget_show_all(gtk_notebook_get_nth_page(GTK_NOTEBOOK(notebook), page));
     gtk_notebook_set_current_page(GTK_NOTEBOOK(notebook), page);
@@ -1652,10 +1699,10 @@ void on_switch_page(GtkNotebook* nb, GtkWidget* page, guint page_num, gpointer d
             gtk_widget_show(progress_bar);
             gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(progress_bar), 
                 webkit_web_view_get_estimated_load_progress(WEBKIT_WEB_VIEW(webview)));
-            update_status_text(tr("加载中...", "Loading..."), FALSE);
+            update_status_text(tr_full("加载中...", "載入中...", "Loading..."), FALSE);
         } else {
             gtk_widget_hide(progress_bar);
-            update_status_text(tr("完成", "Done"), TRUE);
+            update_status_text(tr_full("完成", "完成", "Done"), TRUE);
         }
     }
 }
@@ -1675,11 +1722,10 @@ void on_close_tab(GtkWidget* w, gpointer d) {
     }
 }
 
-
 void show_readonly_text_dialog(GtkWidget* parent, const char* title, const char* body) {
     GtkWidget* dialog = gtk_dialog_new_with_buttons(title ? title : "Information", GTK_WINDOW(parent),
         (GtkDialogFlags)(GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT),
-        tr("关闭", "Close"), GTK_RESPONSE_CLOSE, NULL);
+        tr_full("关闭", "關閉", "Close"), GTK_RESPONSE_CLOSE, NULL);
     gtk_window_set_default_size(GTK_WINDOW(dialog), 620, 520);
     GtkWidget* area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
     GtkWidget* scroll = gtk_scrolled_window_new(NULL, NULL);
@@ -1699,7 +1745,7 @@ void show_readonly_text_dialog(GtkWidget* parent, const char* title, const char*
 void show_project_info(GtkWidget* parent) {
     GtkWidget* dialog = gtk_dialog_new_with_buttons("About WebBrowser", GTK_WINDOW(parent),
         (GtkDialogFlags)(GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT),
-        tr("关闭", "Close"), GTK_RESPONSE_CLOSE, NULL);
+        tr_full("关闭", "關閉", "Close"), GTK_RESPONSE_CLOSE, NULL);
     gtk_window_set_default_size(GTK_WINDOW(dialog), 560, 420);
     GtkWidget* area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
     GtkWidget* scroll = gtk_scrolled_window_new(NULL, NULL);
@@ -1733,13 +1779,12 @@ void show_license(GtkWidget* parent) {
     show_readonly_text_dialog(parent, "GNU GPL v3 License", GPL3_TEXT);
 }
 
-
 void on_settings(GtkWidget* w, gpointer) {
     GtkWidget* parent = gtk_widget_get_toplevel(w);
     GtkWidget* dialog = gtk_dialog_new_with_buttons("Settings", GTK_WINDOW(parent),
         (GtkDialogFlags)(GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT),
-        tr("保存", "Save"), GTK_RESPONSE_ACCEPT,
-        tr("取消", "Cancel"), GTK_RESPONSE_CANCEL, NULL);
+        tr_full("保存", "儲存", "Save"), GTK_RESPONSE_ACCEPT,
+        tr_full("取消", "取消", "Cancel"), GTK_RESPONSE_CANCEL, NULL);
     gtk_window_set_default_size(GTK_WINDOW(dialog), 420, 560);
     gtk_window_set_resizable(GTK_WINDOW(dialog), TRUE);
     GtkWidget* area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
@@ -1750,32 +1795,33 @@ void on_settings(GtkWidget* w, gpointer) {
     gtk_container_add(GTK_CONTAINER(scroll), box);
     gtk_box_pack_start(GTK_BOX(area), scroll, TRUE, TRUE, 0);
 
-    GtkWidget* appearance_frame = gtk_frame_new(tr("外观与浏览", "Appearance and browsing"));
+    GtkWidget* appearance_frame = gtk_frame_new(tr_full("外观与浏览", "外觀與瀏覽", "Appearance and browsing"));
     GtkWidget* appearance = gtk_grid_new();
     gtk_grid_set_row_spacing(GTK_GRID(appearance), 9);
     gtk_grid_set_column_spacing(GTK_GRID(appearance), 12);
     gtk_container_set_border_width(GTK_CONTAINER(appearance), 12);
     gtk_container_add(GTK_CONTAINER(appearance_frame), appearance);
 
-    GtkWidget* theme_label = gtk_label_new(tr("颜色模式", "Color mode"));
+    GtkWidget* theme_label = gtk_label_new(tr_full("颜色模式", "顏色模式", "Color mode"));
     gtk_widget_set_halign(theme_label, GTK_ALIGN_START);
     GtkWidget* theme_combo = gtk_combo_box_text_new();
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(theme_combo), "light", tr("浅色", "Light"));
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(theme_combo), "dark", tr("深色", "Dark"));
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(theme_combo), "light", tr_full("浅色", "淺色", "Light"));
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(theme_combo), "dark", tr_full("深色", "深色", "Dark"));
     gtk_combo_box_set_active_id(GTK_COMBO_BOX(theme_combo), ui_theme.c_str());
     gtk_grid_attach(GTK_GRID(appearance), theme_label, 0, 0, 1, 1);
     gtk_grid_attach(GTK_GRID(appearance), theme_combo, 1, 0, 1, 1);
 
-    GtkWidget* lang_label = gtk_label_new(tr("界面语言", "Language"));
+    GtkWidget* lang_label = gtk_label_new(tr_full("界面语言", "介面語言", "Language"));
     gtk_widget_set_halign(lang_label, GTK_ALIGN_START);
     GtkWidget* lang_combo = gtk_combo_box_text_new();
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(lang_combo), "zh", "中文");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(lang_combo), "zh", "简体中文");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(lang_combo), "zh-TW", "繁體中文");
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(lang_combo), "en", "English");
     gtk_combo_box_set_active_id(GTK_COMBO_BOX(lang_combo), ui_language.c_str());
     gtk_grid_attach(GTK_GRID(appearance), lang_label, 0, 1, 1, 1);
     gtk_grid_attach(GTK_GRID(appearance), lang_combo, 1, 1, 1, 1);
 
-    GtkWidget* zoom_label = gtk_label_new(tr("网页缩放", "Page zoom"));
+    GtkWidget* zoom_label = gtk_label_new(tr_full("网页缩放", "網頁縮放", "Page zoom"));
     gtk_widget_set_halign(zoom_label, GTK_ALIGN_START);
     GtkWidget* zoom_scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0.0, 100.0, 1.0);
     gtk_range_set_value(GTK_RANGE(zoom_scale), page_zoom_percent);
@@ -1785,7 +1831,7 @@ void on_settings(GtkWidget* w, gpointer) {
     gtk_scale_add_mark(GTK_SCALE(zoom_scale), 50.0, GTK_POS_BOTTOM, "50%");
     gtk_scale_add_mark(GTK_SCALE(zoom_scale), 100.0, GTK_POS_BOTTOM, "100%");
     gtk_widget_set_hexpand(zoom_scale, TRUE);
-    GtkWidget* zoom_note = gtk_label_new(tr("范围 0%–100%，默认 50%；按原版自适应比例计算。", "Range 0%–100%, default 50%; based on the original adaptive ratio."));
+    GtkWidget* zoom_note = gtk_label_new(tr_full("范围 0%–100%，默认 50%；按原版自适应比例计算。", "範圍 0%–100%，預設 50%；按原版自適應比例計算。", "Range 0%–100%, default 50%; based on the original adaptive ratio."));
     gtk_label_set_line_wrap(GTK_LABEL(zoom_note), TRUE);
     gtk_widget_set_halign(zoom_note, GTK_ALIGN_START);
     gtk_grid_attach(GTK_GRID(appearance), zoom_label, 0, 2, 1, 1);
@@ -1793,13 +1839,13 @@ void on_settings(GtkWidget* w, gpointer) {
     gtk_grid_attach(GTK_GRID(appearance), zoom_note, 0, 3, 2, 1);
     gtk_box_pack_start(GTK_BOX(box), appearance_frame, FALSE, FALSE, 0);
 
-    GtkWidget* debug_frame = gtk_frame_new(tr("开发者设置", "Developer Settings"));
+    GtkWidget* debug_frame = gtk_frame_new(tr_full("开发者设置", "開發者設定", "Developer Settings"));
     GtkWidget* debug_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
     gtk_container_set_border_width(GTK_CONTAINER(debug_box), 12);
     gtk_container_add(GTK_CONTAINER(debug_frame), debug_box);
-    GtkWidget* js_check = gtk_check_button_new_with_label(tr("启用 JavaScript", "Enable JavaScript"));
-    GtkWidget* webgl_check = gtk_check_button_new_with_label(tr("启用 WebGL", "Enable WebGL"));
-    GtkWidget* media_check = gtk_check_button_new_with_label(tr("媒体播放需要用户操作", "Require user gesture for media playback"));
+    GtkWidget* js_check = gtk_check_button_new_with_label(tr_full("启用 JavaScript", "啟用 JavaScript", "Enable JavaScript"));
+    GtkWidget* webgl_check = gtk_check_button_new_with_label(tr_full("启用 WebGL", "啟用 WebGL", "Enable WebGL"));
+    GtkWidget* media_check = gtk_check_button_new_with_label(tr_full("媒体播放需要用户操作", "媒體播放需要使用者操作", "Require user gesture for media playback"));
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(js_check), javascript_enabled);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(webgl_check), webgl_enabled);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(media_check), media_requires_gesture);
@@ -1808,19 +1854,19 @@ void on_settings(GtkWidget* w, gpointer) {
     gtk_box_pack_start(GTK_BOX(debug_box), media_check, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(box), debug_frame, FALSE, FALSE, 0);
 
-    GtkWidget* about_frame = gtk_frame_new(tr("关于", "About"));
+    GtkWidget* about_frame = gtk_frame_new(tr_full("关于", "關於", "About"));
     GtkWidget* about_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 7);
     gtk_container_set_border_width(GTK_CONTAINER(about_box), 12);
     gtk_container_add(GTK_CONTAINER(about_frame), about_box);
-    GtkWidget* team = gtk_label_new(tr("制作团队：Sakuragi Group", "Developed by Sakuragi Group"));
+    GtkWidget* team = gtk_label_new(tr_full("制作团队：Sakuragi Group", "製作團隊：Sakuragi Group", "Developed by Sakuragi Group"));
     gtk_widget_set_halign(team, GTK_ALIGN_START);
     gtk_box_pack_start(GTK_BOX(about_box), team, FALSE, FALSE, 0);
     GtkWidget* copyright = gtk_label_new("Copyright © Sakuragi Group");
     gtk_widget_set_halign(copyright, GTK_ALIGN_START);
     gtk_box_pack_start(GTK_BOX(about_box), copyright, FALSE, FALSE, 0);
-    GtkWidget* info_button = gtk_button_new_with_label(tr("项目说明", "Project information"));
-    GtkWidget* license_button = gtk_button_new_with_label(tr("GNU GPL v3 开源协议", "GNU GPL v3 license"));
-    GtkWidget* telegram_button = gtk_button_new_with_label(tr("Telegram 频道", "Telegram channel"));
+    GtkWidget* info_button = gtk_button_new_with_label(tr_full("项目说明", "專案說明", "Project information"));
+    GtkWidget* license_button = gtk_button_new_with_label(tr_full("GNU GPL v3 开源协议", "GNU GPL v3 開源協議", "GNU GPL v3 license"));
+    GtkWidget* telegram_button = gtk_button_new_with_label(tr_full("Telegram 频道", "Telegram 頻道", "Telegram channel"));
     gtk_widget_set_halign(info_button, GTK_ALIGN_FILL);
     gtk_widget_set_halign(license_button, GTK_ALIGN_FILL);
     gtk_widget_set_halign(telegram_button, GTK_ALIGN_FILL);
@@ -1947,12 +1993,11 @@ void build_ui(GtkWidget* window) {
     gtk_notebook_set_scrollable(GTK_NOTEBOOK(notebook), TRUE);
     gtk_container_add(GTK_CONTAINER(overlay), notebook);
 
-    // Place tab controls directly on the notebook tab strip instead of wasting a separate row.
     GtkWidget* tab_actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 3);
     tab_add_button = gtk_button_new_with_label("+");
     tab_close_button = gtk_button_new_with_label("×");
-    gtk_widget_set_tooltip_text(tab_add_button, tr("新建标签页", "New tab"));
-    gtk_widget_set_tooltip_text(tab_close_button, tr("关闭当前标签页", "Close current tab"));
+    gtk_widget_set_tooltip_text(tab_add_button, tr_full("新建标签页", "新增分頁", "New tab"));
+    gtk_widget_set_tooltip_text(tab_close_button, tr_full("关闭当前标签页", "關閉目前分頁", "Close current tab"));
     gtk_box_pack_start(GTK_BOX(tab_actions), tab_add_button, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(tab_actions), tab_close_button, FALSE, FALSE, 0);
     gtk_notebook_set_action_widget(GTK_NOTEBOOK(notebook), tab_actions, GTK_PACK_END);
@@ -1988,17 +2033,12 @@ void build_ui(GtkWidget* window) {
 
     apply_ui_language();
     add_tab("https://cn.bing.com");
-
 }
 
 int main(int argc, char* argv[]) {
     g_setenv("WEBKIT_DISABLE_COMPOSITING_MODE", "1", TRUE);
     g_setenv("WEBKIT_DISABLE_DMABUF_RENDERER", "1", TRUE);
-    
-    // 屏蔽无障碍总线警告，防止该警告引发潜在崩溃
     g_setenv("NO_AT_BRIDGE", "1", TRUE); 
-    
-    // 保持 WebKit 默认合成设置，避免额外注入脚本或网页样式干扰加载。
 
     gtk_init(&argc, &argv);
     GtkWidget* window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
