@@ -19,7 +19,7 @@ read -p "*回车返回"
 exec "$0"
 }
 EH(){
-g++ $(dirname "$0")/assets/WebBrowser.cpp -o $(dirname "$0")/assets/WebBrowser $(pkg-config --cflags --libs webkit2gtk-4.1 gtk+-3.0) -std=c++17
+clang++ $(dirname "$0")/assets/WebBrowser.cpp -o $(dirname "$0")/assets/WebBrowser $(pkg-config --cflags --libs gtk+-3.0 webkit2gtk-4.1) -std=c++17 -Wno-deprecated-declarations
 mkdir -p $PREFIX/share/WebBrowser
 mkdir -p $HOME/.config/WebBrowser/data/icons/
 mkdir -p $PREFIX/share/icons/hicolor/64x64/apps/
