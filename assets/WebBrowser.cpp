@@ -89,7 +89,7 @@ const char* tr_full(const char* zh, const char* zh_tw, const char* en) {
 }
 
 GtkWidget* get_webview_from_page(GtkWidget* page) {
-    if (!page) return nullptr;
+    if (!page || !GTK_IS_CONTAINER(page)) return nullptr;
     GList* children = gtk_container_get_children(GTK_CONTAINER(page));
     if (children) {
         GtkWidget* webview = GTK_WIDGET(children->data);
@@ -100,6 +100,7 @@ GtkWidget* get_webview_from_page(GtkWidget* page) {
 }
 
 GtkWidget* get_current_webview() {
+    if (!notebook || !GTK_IS_NOTEBOOK(notebook)) return nullptr;
     int page_idx = gtk_notebook_get_current_page(GTK_NOTEBOOK(notebook));
     if (page_idx == -1) return nullptr;
     GtkWidget* page = gtk_notebook_get_nth_page(GTK_NOTEBOOK(notebook), page_idx);
@@ -118,14 +119,15 @@ void write_log(const std::string& msg) {
 }
 
 gboolean hide_status_callback(gpointer user_data) {
-    gtk_widget_hide(status_overlay);
+    if (status_overlay && GTK_IS_WIDGET(status_overlay))
+        gtk_widget_hide(status_overlay);
     status_hide_timer = 0;
     return G_SOURCE_REMOVE;
 }
 
 void update_status_text(const char* text, gboolean auto_hide) {
-    if (!status_overlay) return;
-    gtk_label_set_text(GTK_LABEL(status_overlay), text);
+    if (!status_overlay || !GTK_IS_LABEL(status_overlay)) return;
+    gtk_label_set_text(GTK_LABEL(status_overlay), text ? text : "");
     gtk_widget_show(status_overlay);
     if (status_hide_timer > 0) {
         g_source_remove(status_hide_timer);
@@ -786,15 +788,210 @@ gboolean on_url_entry_focus_out(GtkWidget* widget, GdkEventFocus* event, gpointe
     GtkWidget* webview = get_current_webview();
     if (webview) {
         const gchar* uri = webkit_web_view_get_uri(WEBKIT_WEB_VIEW(webview));
-        gtk_entry_set_text(GTK_ENTRY(url_entry), uri ? uri : "");
+        if (url_entry && GTK_IS_ENTRY(url_entry))
+            gtk_entry_set_text(GTK_ENTRY(url_entry), uri ? uri : "");
         apply_page_zoom(webview);
     }
     return FALSE;
 }
 
-// 接管地址栏输入框右键菜单，强制替换为当前程序语言（避免 GTK 默认回退为英文）
+static void context_menu_run_js_finished(GObject* object, GAsyncResult* result, gpointer) {
+    if (!object || !WEBKIT_IS_WEB_VIEW(object) || !result) return;
+    GError* error = nullptr;
+    JSCValue* js_value =
+        webkit_web_view_evaluate_javascript_finish(WEBKIT_WEB_VIEW(object), result, &error);
+    if (js_value) g_object_unref(js_value);
+    if (error) g_error_free(error);
+}
+
+static std::string get_trimmed_entry_selection(GtkEditable* editable) {
+    if (!editable || !GTK_IS_EDITABLE(editable)) return "";
+    gint start_pos = 0, end_pos = 0;
+    if (!gtk_editable_get_selection_bounds(editable, &start_pos, &end_pos) || start_pos == end_pos) {
+        return "";
+    }
+    if (start_pos > end_pos) std::swap(start_pos, end_pos);
+    gchar* selected = gtk_editable_get_chars(editable, start_pos, end_pos);
+    std::string text(selected ? selected : "");
+    g_free(selected);
+    while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front()))) text.erase(text.begin());
+    while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back()))) text.pop_back();
+    return text;
+}
+
+enum class ContextActionType {
+    Cut,
+    Copy,
+    Paste,
+    Delete,
+    SelectAll,
+    SearchSelected
+};
+
+struct UnifiedMenuItemData {
+    GObject* target;
+    bool is_entry;
+    ContextActionType action;
+    gboolean target_alive;
+};
+
+static void on_unified_target_weak_notify(gpointer data, GObject*) {
+    auto* item_data = static_cast<UnifiedMenuItemData*>(data);
+    if (item_data) {
+        item_data->target_alive = FALSE;
+        item_data->target = nullptr;
+    }
+}
+
+static void on_unified_menu_item_destroy(gpointer data, GClosure*) {
+    auto* item_data = static_cast<UnifiedMenuItemData*>(data);
+    if (!item_data) return;
+    if (item_data->target_alive && item_data->target) {
+        g_object_weak_unref(item_data->target, on_unified_target_weak_notify, item_data);
+    }
+    delete item_data;
+}
+
+static void on_unified_menu_item_activate(GtkMenuItem*, gpointer user_data) {
+    auto* d = static_cast<UnifiedMenuItemData*>(user_data);
+    if (!d || !d->target_alive || !d->target) return;
+
+    if (d->is_entry) {
+        if (!GTK_IS_ENTRY(d->target) || !GTK_IS_EDITABLE(d->target)) return;
+        GtkEntry* entry = GTK_ENTRY(d->target);
+        GtkEditable* editable = GTK_EDITABLE(entry);
+        gint start_pos = 0, end_pos = 0;
+        const gboolean has_sel = gtk_editable_get_selection_bounds(editable, &start_pos, &end_pos) && (start_pos != end_pos);
+
+        switch (d->action) {
+            case ContextActionType::Cut:
+                if (has_sel) gtk_editable_cut_clipboard(editable);
+                break;
+            case ContextActionType::Copy:
+                if (has_sel) gtk_editable_copy_clipboard(editable);
+                break;
+            case ContextActionType::Paste:
+                gtk_editable_paste_clipboard(editable);
+                break;
+            case ContextActionType::Delete:
+                if (has_sel) gtk_editable_delete_selection(editable);
+                break;
+            case ContextActionType::SelectAll:
+                gtk_editable_select_region(editable, 0, -1);
+                break;
+            case ContextActionType::SearchSelected: {
+                std::string selected_text = get_trimmed_entry_selection(editable);
+                if (!selected_text.empty()) {
+                    std::string target = "https://cn.bing.com/search?q=" + url_encode(selected_text);
+                    GtkWidget* target_wv = get_current_webview();
+                    if (target_wv && WEBKIT_IS_WEB_VIEW(target_wv)) {
+                        is_typing = FALSE;
+                        webkit_web_view_load_uri(WEBKIT_WEB_VIEW(target_wv), target.c_str());
+                    } else {
+                        add_tab(target.c_str());
+                    }
+                }
+                break;
+            }
+        }
+    } else {
+        if (!WEBKIT_IS_WEB_VIEW(d->target)) return;
+        WebKitWebView* webview = WEBKIT_WEB_VIEW(d->target);
+        switch (d->action) {
+            case ContextActionType::Cut:
+                webkit_web_view_execute_editing_command(webview, "Cut");
+                break;
+            case ContextActionType::Copy:
+                webkit_web_view_execute_editing_command(webview, "Copy");
+                break;
+            case ContextActionType::Paste:
+                webkit_web_view_execute_editing_command(webview, "Paste");
+                break;
+            case ContextActionType::Delete:
+                webkit_web_view_execute_editing_command(webview, "Delete");
+                break;
+            case ContextActionType::SelectAll:
+                webkit_web_view_execute_editing_command(webview, "SelectAll");
+                break;
+            case ContextActionType::SearchSelected: {
+                const char* script =
+                    "(()=>{const s=String(window.getSelection()).trim();"
+                    "if(s)location.href='https://cn.bing.com/search?q='+encodeURIComponent(s);})();";
+                webkit_web_view_evaluate_javascript(webview, script, -1,
+                    nullptr, nullptr, nullptr,
+                    context_menu_run_js_finished, nullptr);
+                break;
+            }
+        }
+    }
+}
+
+// 统一构建 GTK 输入框与网页视图的右键菜单：项目完全一致、顺序与布局完全平等
+static void populate_unified_context_menu(
+    GtkMenuShell* menu_shell,
+    GtkEntry* entry,
+    WebKitWebView* webview
+) {
+    if (!menu_shell || !GTK_IS_MENU_SHELL(menu_shell)) return;
+    const bool is_entry = (entry != nullptr && GTK_IS_ENTRY(entry));
+    const bool is_webview = (webview != nullptr && WEBKIT_IS_WEB_VIEW(webview));
+    if (!is_entry && !is_webview) return;
+
+    GObject* target_obj = is_entry ? G_OBJECT(entry) : G_OBJECT(webview);
+
+    gboolean has_selection = FALSE;
+    gboolean has_text = FALSE;
+    if (is_entry) {
+        gint start_pos = 0, end_pos = 0;
+        has_selection = gtk_editable_get_selection_bounds(GTK_EDITABLE(entry), &start_pos, &end_pos) && (start_pos != end_pos);
+        const gchar* current_text = gtk_entry_get_text(entry);
+        has_text = (current_text && *current_text);
+    } else {
+        // 网页视图在右键菜单中保留全部操作入口可用，与输入框结构对齐
+        has_selection = TRUE;
+        has_text = TRUE;
+    }
+
+    auto append_action_item = [&](const char* zh, const char* zhtw, const char* en,
+                                   gboolean sensitive, ContextActionType action) {
+        GtkWidget* item = gtk_menu_item_new_with_label(tr_full(zh, zhtw, en));
+        gtk_widget_set_sensitive(item, sensitive);
+
+        auto* item_data = new UnifiedMenuItemData{target_obj, is_entry, action, TRUE};
+        g_object_weak_ref(target_obj, on_unified_target_weak_notify, item_data);
+        g_signal_connect_data(item, "activate",
+            G_CALLBACK(on_unified_menu_item_activate),
+            item_data,
+            on_unified_menu_item_destroy,
+            (GConnectFlags)0);
+        gtk_menu_shell_append(menu_shell, item);
+    };
+
+    // 1. 剪切
+    append_action_item("剪切", "剪下", "Cut", has_selection, ContextActionType::Cut);
+
+    // 2. 复制
+    append_action_item("复制", "複製", "Copy", has_selection, ContextActionType::Copy);
+
+    // 3. 粘贴
+    append_action_item("粘贴", "貼上", "Paste", TRUE, ContextActionType::Paste);
+
+    // 4. 删除
+    append_action_item("删除", "刪除", "Delete", has_selection, ContextActionType::Delete);
+
+    // 5. 分隔线
+    gtk_menu_shell_append(menu_shell, gtk_separator_menu_item_new());
+
+    // 6. 全选
+    append_action_item("全选", "全選", "Select all", has_text, ContextActionType::SelectAll);
+
+    // 7. 搜索选中文本
+    append_action_item("搜索选中文本", "搜尋選取文字", "Search selected text", has_selection, ContextActionType::SearchSelected);
+}
+
+// 接管 GTK 输入框右键菜单，与网页菜单完全一致
 void on_url_entry_populate_popup(GtkEntry* entry, GtkWidget* popup, gpointer) {
-    if (!GTK_IS_MENU_SHELL(popup)) return;
+    if (!entry || !GTK_IS_ENTRY(entry) || !popup || !GTK_IS_MENU_SHELL(popup)) return;
 
     GList* children = gtk_container_get_children(GTK_CONTAINER(popup));
     for (GList* l = children; l != nullptr; l = l->next) {
@@ -802,33 +999,7 @@ void on_url_entry_populate_popup(GtkEntry* entry, GtkWidget* popup, gpointer) {
     }
     g_list_free(children);
 
-    gint start_pos = 0, end_pos = 0;
-    const gboolean has_selection = gtk_editable_get_selection_bounds(GTK_EDITABLE(entry), &start_pos, &end_pos);
-    const gchar* current_text = gtk_entry_get_text(entry);
-    const gboolean has_text = (current_text && *current_text);
-
-    auto add_entry_item = [&](const char* zh, const char* zhtw, const char* en,
-                              gboolean sensitive, GCallback cb) {
-        GtkWidget* item = gtk_menu_item_new_with_label(tr_full(zh, zhtw, en));
-        gtk_widget_set_sensitive(item, sensitive);
-        g_signal_connect_swapped(item, "activate", cb, entry);
-        gtk_menu_shell_append(GTK_MENU_SHELL(popup), item);
-    };
-
-    add_entry_item("剪切", "剪下", "Cut", has_selection, G_CALLBACK(gtk_editable_cut_clipboard));
-    add_entry_item("复制", "複製", "Copy", has_selection, G_CALLBACK(gtk_editable_copy_clipboard));
-    add_entry_item("粘贴", "貼上", "Paste", TRUE, G_CALLBACK(gtk_editable_paste_clipboard));
-    add_entry_item("删除", "刪除", "Delete", has_selection, G_CALLBACK(gtk_editable_delete_selection));
-
-    gtk_menu_shell_append(GTK_MENU_SHELL(popup), gtk_separator_menu_item_new());
-
-    GtkWidget* select_all_item = gtk_menu_item_new_with_label(tr_full("全选", "全選", "Select all"));
-    gtk_widget_set_sensitive(select_all_item, has_text);
-    g_signal_connect(select_all_item, "activate", G_CALLBACK(+[](GtkMenuItem*, gpointer data) {
-        gtk_editable_select_region(GTK_EDITABLE(data), 0, -1);
-    }), entry);
-    gtk_menu_shell_append(GTK_MENU_SHELL(popup), select_all_item);
-
+    populate_unified_context_menu(GTK_MENU_SHELL(popup), entry, nullptr);
     gtk_widget_show_all(popup);
 }
 
@@ -865,7 +1036,7 @@ void on_load_changed(WebKitWebView* web_view, WebKitLoadEvent load_event, gpoint
         save_history(uri, title);
         write_log("加载完成: " + std::string(uri ? uri : "未知"));
 
-        if (is_foreground && !is_typing) {
+        if (is_foreground && !is_typing && url_entry && GTK_IS_ENTRY(url_entry)) {
             gtk_entry_set_text(GTK_ENTRY(url_entry), uri ? uri : "");
         }
     }
@@ -983,6 +1154,7 @@ void on_web_process_terminated(WebKitWebView* web_view, WebKitWebProcessTerminat
 }
 
 void on_url_activate(GtkWidget* widget, gpointer data) {
+    if (!url_entry || !GTK_IS_ENTRY(url_entry)) return;
     const char* input = gtk_entry_get_text(GTK_ENTRY(url_entry));
     std::string target = resolve_input(input);
     write_log("用户输入导航: " + target);
@@ -1022,7 +1194,7 @@ void on_window_size_allocate(GtkWidget*, GtkAllocation*, gpointer) {
 }
 
 void apply_zoom_to_all_tabs() {
-    if (!notebook) return;
+    if (!notebook || !GTK_IS_NOTEBOOK(notebook)) return;
     for (int i = 0; i < gtk_notebook_get_n_pages(GTK_NOTEBOOK(notebook)); ++i) {
         GtkWidget* page = gtk_notebook_get_nth_page(GTK_NOTEBOOK(notebook), i);
         GtkWidget* view = get_webview_from_page(page);
@@ -1030,15 +1202,8 @@ void apply_zoom_to_all_tabs() {
     }
 }
 
-static void context_menu_run_js_finished(GObject* object, GAsyncResult* result, gpointer) {
-    GError* error = nullptr;
-    JSCValue* js_value =
-        webkit_web_view_evaluate_javascript_finish(WEBKIT_WEB_VIEW(object), result, &error);
-    if (js_value) g_object_unref(js_value);
-    if (error) g_error_free(error);
-}
-
 static void run_selection_toolbar_script(WebKitWebView* view) {
+    if (!view || !WEBKIT_IS_WEB_VIEW(view)) return;
     const char* copy_label = ui_language == "en" ? "Copy" :
         (ui_language == "zh-TW" ? "複製" : "复制");
     const char* search_label = ui_language == "en" ? "Search" :
@@ -1102,67 +1267,39 @@ static void run_selection_toolbar_script(WebKitWebView* view) {
         context_menu_run_js_finished, nullptr);
 }
 
-static void show_custom_webview_menu(WebKitWebView* view, gboolean has_selection, const GdkEvent* trigger_event) {
+static void show_custom_webview_menu(WebKitWebView* view, const GdkEvent* trigger_event) {
+    if (!view || !WEBKIT_IS_WEB_VIEW(view)) return;
     GtkWidget* menu = gtk_menu_new();
-
-    auto add_item = [&](const char* zh, const char* zhtw, const char* en,
-                        const char* command, gboolean enabled) {
-        GtkWidget* item = gtk_menu_item_new_with_label(tr_full(zh, zhtw, en));
-        gtk_widget_set_sensitive(item, enabled);
-        using ContextCommandPair = std::pair<WebKitWebView*, gchar*>;
-        g_signal_connect(item, "activate", G_CALLBACK(+[](GtkMenuItem*, gpointer data) {
-            auto* pair = static_cast<ContextCommandPair*>(data);
-            webkit_web_view_execute_editing_command(pair->first, pair->second);
-            g_free(pair->second);
-            delete pair;
-        }), new ContextCommandPair(view, g_strdup(command)));
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
-    };
-    add_item("复制", "複製", "Copy", "Copy", has_selection);
-    add_item("粘贴", "貼上", "Paste", "Paste", TRUE);
-    add_item("全选", "全選", "Select all", "SelectAll", TRUE);
-    if (has_selection) {
-        GtkWidget* search = gtk_menu_item_new_with_label(
-            tr_full("搜索选中文本", "搜尋選取文字", "Search selected text"));
-        g_signal_connect(search, "activate", G_CALLBACK(+[](GtkMenuItem*, gpointer data) {
-            WebKitWebView* web = WEBKIT_WEB_VIEW(data);
-            const char* script =
-                "(()=>{const s=String(window.getSelection()).trim();"
-                "if(s)location.href='https://cn.bing.com/search?q='+encodeURIComponent(s);})();";
-            webkit_web_view_evaluate_javascript(web, script, -1,
-                nullptr, nullptr, nullptr,
-                context_menu_run_js_finished, nullptr);
-        }), view);
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), search);
-    }
+    populate_unified_context_menu(GTK_MENU_SHELL(menu), nullptr, view);
     gtk_widget_show_all(menu);
     gtk_menu_popup_at_pointer(GTK_MENU(menu), trigger_event);
 }
 
 gboolean on_webview_context_menu(WebKitWebView* view, WebKitContextMenu*,
-        GdkEvent* event, WebKitHitTestResult* hit_test, gpointer) {
+        GdkEvent* event, WebKitHitTestResult*, gpointer) {
+    if (!view || !WEBKIT_IS_WEB_VIEW(view)) return TRUE;
     last_webview_menu_time = event ? gdk_event_get_time(event) : gtk_get_current_event_time();
-    const gboolean has_selection =
-        webkit_hit_test_result_context_is_selection(hit_test);
-    show_custom_webview_menu(view, has_selection, event);
+    show_custom_webview_menu(view, event);
     return TRUE;
 }
 
 // 兜底捕获网页内鼠标右键按下事件，防止部分 X11 环境下 WebKit 未发出 context-menu 信号
 gboolean on_webview_button_press(GtkWidget* widget, GdkEventButton* event, gpointer) {
+    if (!widget || !WEBKIT_IS_WEB_VIEW(widget)) return FALSE;
     if (event && event->type == GDK_BUTTON_PRESS && event->button == 3) {
         if (event->time != 0 && event->time == last_webview_menu_time) {
             return TRUE;
         }
         last_webview_menu_time = event->time;
         gtk_widget_grab_focus(widget);
-        show_custom_webview_menu(WEBKIT_WEB_VIEW(widget), TRUE, reinterpret_cast<const GdkEvent*>(event));
+        show_custom_webview_menu(WEBKIT_WEB_VIEW(widget), reinterpret_cast<const GdkEvent*>(event));
         return TRUE;
     }
     return FALSE;
 }
 
 void add_tab(const char* url) {
+    if (!notebook || !GTK_IS_NOTEBOOK(notebook) || !web_context) return;
     GtkWidget* webview = webkit_web_view_new_with_context(web_context);
     gtk_widget_set_hexpand(webview, TRUE);
     gtk_widget_set_vexpand(webview, TRUE);
@@ -1184,9 +1321,10 @@ void add_tab(const char* url) {
     g_signal_connect(webview, "button-press-event", G_CALLBACK(on_webview_button_press), NULL);
 
     g_signal_connect(webview, "notify::title", G_CALLBACK(+[](GtkWidget* w, GParamSpec*, gpointer){
+        if (!notebook || !GTK_IS_NOTEBOOK(notebook) || !w || !WEBKIT_IS_WEB_VIEW(w)) return;
         const gchar* title = webkit_web_view_get_title(WEBKIT_WEB_VIEW(w));
         GtkWidget* page_widget = gtk_widget_get_parent(w);
-        gint page = page_widget ? gtk_notebook_page_num(GTK_NOTEBOOK(notebook), page_widget) : -1;
+        gint page = (page_widget && GTK_IS_WIDGET(page_widget)) ? gtk_notebook_page_num(GTK_NOTEBOOK(notebook), page_widget) : -1;
         if (page >= 0) gtk_notebook_set_tab_label_text(GTK_NOTEBOOK(notebook), page_widget,
             (title && *title) ? title : tr_full("新标签页", "新分頁", "New tab"));
     }), NULL);
@@ -1199,7 +1337,7 @@ void add_tab(const char* url) {
     gtk_widget_show_all(vbox);
     gtk_widget_show_all(gtk_notebook_get_nth_page(GTK_NOTEBOOK(notebook), page));
     gtk_notebook_set_current_page(GTK_NOTEBOOK(notebook), page);
-    webkit_web_view_load_uri(WEBKIT_WEB_VIEW(webview), url);
+    webkit_web_view_load_uri(WEBKIT_WEB_VIEW(webview), url ? url : "https://cn.bing.com");
 }
 
 void on_switch_page(GtkNotebook* nb, GtkWidget* page, guint page_num, gpointer data) {
@@ -1207,7 +1345,8 @@ void on_switch_page(GtkNotebook* nb, GtkWidget* page, guint page_num, gpointer d
     GtkWidget* webview = get_webview_from_page(page);
     if (webview) {
         const gchar* uri = webkit_web_view_get_uri(WEBKIT_WEB_VIEW(webview));
-        gtk_entry_set_text(GTK_ENTRY(url_entry), uri ? uri : "");
+        if (url_entry && GTK_IS_ENTRY(url_entry))
+            gtk_entry_set_text(GTK_ENTRY(url_entry), uri ? uri : "");
         apply_page_zoom(webview);
 
         if (webkit_web_view_is_loading(WEBKIT_WEB_VIEW(webview))) {
@@ -1228,6 +1367,7 @@ void on_refresh(GtkWidget* w, gpointer d) { GtkWidget* wv = get_current_webview(
 void on_new_tab(GtkWidget* w, gpointer d) { add_tab("https://cn.bing.com"); }
 
 void on_close_tab(GtkWidget* w, gpointer d) {
+    if (!notebook || !GTK_IS_NOTEBOOK(notebook)) return;
     int page_idx = gtk_notebook_get_current_page(GTK_NOTEBOOK(notebook));
     if (page_idx == -1) return;
 
