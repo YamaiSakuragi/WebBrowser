@@ -166,12 +166,12 @@ std::string url_encode(const std::string& value) {
 
 std::string resolve_input(const char* input) {
     std::string s(input ? input : "");
-    if (s.empty()) return "https://cn.bing.com";
+    if (s.empty()) return "https://www.google.com";
     if (s.find(" ") == std::string::npos && s.find(".") != std::string::npos) {
         if (s.find("://") == std::string::npos) return "https://" + s;
         return s;
     }
-    return "https://cn.bing.com/search?q=" + url_encode(s);
+    return "https://www.google.com/search?q=" + url_encode(s);
 }
 
 void read_records(const std::string& file, std::vector<RecordItem>& list) {
@@ -754,7 +754,7 @@ void on_bookmark(GtkWidget* w, gpointer d) {
                     GTK_MESSAGE_INFO,
                     GTK_BUTTONS_OK,
                     "%s",
-                    tr_full("该页面已收藏！", "該頁面已收藏！", "This page is already bookmarked!")
+                    tr_full("页面已收藏", "頁面已收藏", "Page Favorite")
                 );
                 gtk_dialog_run(GTK_DIALOG(dialog));
                 gtk_widget_destroy(dialog);
@@ -769,7 +769,7 @@ void on_bookmark(GtkWidget* w, gpointer d) {
             GTK_MESSAGE_INFO,
             GTK_BUTTONS_OK,
             "%s",
-            tr_full("收藏成功！", "收藏成功！", "Bookmark added successfully!")
+            tr_full("收藏成功", "收藏成功", "Bookmark added successfully")
         );
         gtk_dialog_run(GTK_DIALOG(dialog));
         gtk_widget_destroy(dialog);
@@ -882,7 +882,7 @@ static void on_unified_menu_item_activate(GtkMenuItem*, gpointer user_data) {
             case ContextActionType::SearchSelected: {
                 std::string selected_text = get_trimmed_entry_selection(editable);
                 if (!selected_text.empty()) {
-                    std::string target = "https://cn.bing.com/search?q=" + url_encode(selected_text);
+                    std::string target = "https://www.google.com/search?q=" + url_encode(selected_text);
                     GtkWidget* target_wv = get_current_webview();
                     if (target_wv && WEBKIT_IS_WEB_VIEW(target_wv)) {
                         is_typing = FALSE;
@@ -916,7 +916,7 @@ static void on_unified_menu_item_activate(GtkMenuItem*, gpointer user_data) {
             case ContextActionType::SearchSelected: {
                 const char* script =
                     "(()=>{const s=String(window.getSelection()).trim();"
-                    "if(s)location.href='https://cn.bing.com/search?q='+encodeURIComponent(s);})();";
+                    "if(s)location.href='https://www.google.com/search?q='+encodeURIComponent(s);})();";
                 webkit_web_view_evaluate_javascript(webview, script, -1,
                     nullptr, nullptr, nullptr,
                     context_menu_run_js_finished, nullptr);
@@ -1240,7 +1240,7 @@ static void run_selection_toolbar_script(WebKitWebView* view) {
       });
       button(labels.search, () => {
         const text=String(window.getSelection()).trim();
-        if (text) location.href='https://cn.bing.com/search?q='+encodeURIComponent(text);
+        if (text) location.href='https://www.google.com/search?q='+encodeURIComponent(text);
       });
       button(labels.all, () => { document.execCommand('selectAll'); });
       (document.body || document.documentElement).appendChild(bar);
@@ -1337,7 +1337,7 @@ void add_tab(const char* url) {
     gtk_widget_show_all(vbox);
     gtk_widget_show_all(gtk_notebook_get_nth_page(GTK_NOTEBOOK(notebook), page));
     gtk_notebook_set_current_page(GTK_NOTEBOOK(notebook), page);
-    webkit_web_view_load_uri(WEBKIT_WEB_VIEW(webview), url ? url : "https://cn.bing.com");
+    webkit_web_view_load_uri(WEBKIT_WEB_VIEW(webview), url ? url : "https://www.google.com");
 }
 
 void on_switch_page(GtkNotebook* nb, GtkWidget* page, guint page_num, gpointer data) {
@@ -1364,7 +1364,7 @@ void on_switch_page(GtkNotebook* nb, GtkWidget* page, guint page_num, gpointer d
 void on_back(GtkWidget* w, gpointer d) { GtkWidget* wv = get_current_webview(); if (wv) webkit_web_view_go_back(WEBKIT_WEB_VIEW(wv)); }
 void on_forward(GtkWidget* w, gpointer d) { GtkWidget* wv = get_current_webview(); if (wv) webkit_web_view_go_forward(WEBKIT_WEB_VIEW(wv)); }
 void on_refresh(GtkWidget* w, gpointer d) { GtkWidget* wv = get_current_webview(); if (wv) webkit_web_view_reload(WEBKIT_WEB_VIEW(wv)); }
-void on_new_tab(GtkWidget* w, gpointer d) { add_tab("https://cn.bing.com"); }
+void on_new_tab(GtkWidget* w, gpointer d) { add_tab("https://www.google.com"); }
 
 void on_close_tab(GtkWidget* w, gpointer d) {
     if (!notebook || !GTK_IS_NOTEBOOK(notebook)) return;
@@ -1373,7 +1373,7 @@ void on_close_tab(GtkWidget* w, gpointer d) {
 
     gtk_notebook_remove_page(GTK_NOTEBOOK(notebook), page_idx);
     if (gtk_notebook_get_n_pages(GTK_NOTEBOOK(notebook)) == 0) {
-        add_tab("https://cn.bing.com");
+        add_tab("https://www.google.com");
     }
 }
 
@@ -1658,7 +1658,7 @@ void build_ui(GtkWidget* window) {
     g_signal_connect(window, "size-allocate", G_CALLBACK(on_window_size_allocate), NULL);
 
     apply_ui_language();
-    add_tab("https://cn.bing.com");
+    add_tab("https://www.google.com");
 }
 
 int main(int argc, char* argv[]) {
