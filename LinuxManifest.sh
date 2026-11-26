@@ -3,8 +3,8 @@ cat << "INFO"
 ========================================================
 WebBrowser基础信息:
 
-程序版本:v10.1
-菜单版本:v2.0
+程序版本:v10.2
+菜单版本:v2.1
 作者:https://t.me/YamaiSakuragi
 
 ========================================================
@@ -16,7 +16,7 @@ ER(){
 pkg update -y &&
 pkg install x11-repo gtk3 webkit2gtk-4.1 pulseaudio gstreamer gst-plugins-base gst-plugins-good gst-libav clang make cmake pkg-config -y
 read -p "*回车返回"
-exec "$0"
+exit 0
 }
 EH(){
 clang++ $(dirname "$0")/assets/WebBrowser.cpp -o $(dirname "$0")/assets/WebBrowser $(pkg-config --cflags --libs gtk+-3.0 webkit2gtk-4.1) -std=c++17 -Wno-deprecated-declarations
@@ -33,7 +33,7 @@ chmod +x $HOME/Desktop/Frontend_WebBrowser.desktop
 chmod +x $PREFIX/share/applications/Rearend_WebBrowser.desktop
 chmod +x $PREFIX/bin/WebBrowser
 read -p "*回车返回"
-exec "$0"
+exit 0
 }
 EM(){
 rm -rf $PREFIX/share/WebBrowser
@@ -45,7 +45,7 @@ rm -rf $HOME/.config/WebBrowser/
 apt autoremove
 pkg clean
 read -p "*回车返回"
-exec "$0"
+exit 0
 }
 cd $(dirname "$0")
 while true; do
