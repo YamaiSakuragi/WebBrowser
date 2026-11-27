@@ -11,6 +11,7 @@
 #include <memory>
 #include <algorithm>
 #include <sstream>
+#include <fstream>
 #include <cmath>
 #include <cstdlib>
 #include <pango/pango.h>
@@ -339,7 +340,6 @@ static WebKitUserContentFilterStore* content_filter_store = nullptr;
 static std::string base_dir = "/data/data/com.termux/files/home/.config/WebBrowser/data";
 static std::string history_file = base_dir + "/history/history.txt";
 static std::string bookmark_file = base_dir + "/bookmarks/bookmarks.txt";
-static std::string downloads_file = base_dir + "/downloads/downloads.txt";
 static std::string adblock_file = base_dir + "/adblock/rules.txt";
 static std::string app_icon_path = "/data/data/com.termux/files/usr/share/icons/hicolor/64x64/apps/WebBrowser.png";
 
@@ -351,36 +351,20 @@ struct RecordItem {
 static std::vector<RecordItem> history_list;
 static std::vector<RecordItem> bookmark_list;
 
-struct DownloadItem {
-    enum class State { InProgress, Finished, Cancelled, Failed };
-
-    int id = 0;
-    std::string time;
+struct DownloadCliItem {
     std::string filename;
     std::string url;
     std::string destination_path;
     guint64 received_bytes = 0;
     guint64 total_bytes = 0;
     double progress = 0.0;
-    gint64 start_time_us = 0;
-    gint64 last_speed_time_us = 0;
-    guint64 last_speed_bytes = 0;
+    gint64 last_log_time_us = 0;
+    guint64 last_log_bytes = 0;
     double speed_bps = 0.0;
-    State state = State::InProgress;
-    std::string error_msg;
-    bool selected = false;
     WebKitDownload* wk_download = nullptr;
-
-    GtkWidget* row = nullptr;
-    GtkWidget* check_btn = nullptr;
-    GtkWidget* name_label = nullptr;
-    GtkWidget* progress_widget = nullptr;
-    GtkWidget* info_label = nullptr;
-    GtkWidget* cancel_btn = nullptr;
 };
 
-static std::vector<std::shared_ptr<DownloadItem>> download_list;
-static int next_download_id = 1;
+static std::vector<std::shared_ptr<DownloadCliItem>> active_cli_downloads;
 
 // 单窗口统一内嵌设置与数据管理子页面（Firefox 风格 about:preferences）
 static GtkWidget* preferences_page = nullptr;
@@ -398,8 +382,6 @@ static GtkWidget* pref_zoom_scale = nullptr;
 static GtkWidget* pref_gen_action_bar = nullptr;
 static GtkWidget* pref_search_combo = nullptr;
 static GtkWidget* pref_srch_action_bar = nullptr;
-static GtkWidget* pref_dl_entry = nullptr;
-static GtkWidget* pref_dl_action_bar = nullptr;
 static GtkWidget* pref_cookie_combo = nullptr;
 static GtkWidget* pref_media_check = nullptr;
 static GtkWidget* pref_tls_check = nullptr;
@@ -413,16 +395,6 @@ static GtkWidget* pref_dev_action_bar = nullptr;
 static GtkListStore* history_store = nullptr;
 static GtkListStore* cookie_store = nullptr;
 static GtkListStore* bookmark_store = nullptr;
-static GtkWidget* pref_dl_listbox = nullptr;
-static GtkWidget* active_download_listbox = nullptr;
-static bool active_download_multi_mode = false;
-
-
-
-static GtkWidget* dl_popover = nullptr;
-static GtkWidget* dl_popover_listbox = nullptr;
-static GtkWidget* dl_popover_title = nullptr;
-static GtkWidget* dl_popover_manage_btn = nullptr;
 
 static GtkWidget* bm_popover = nullptr;
 static GtkWidget* bm_popover_listbox = nullptr;
@@ -458,14 +430,11 @@ static GtkWidget* btn_refresh = nullptr;
 static GtkWidget* icon_refresh = nullptr;
 static GtkWidget* btn_bookmark = nullptr;
 static GtkWidget* icon_bookmark = nullptr;
-static GtkWidget* btn_downloads = nullptr;
-static GtkWidget* lbl_downloads_badge = nullptr;
 static GtkWidget* btn_menu = nullptr;
 static GtkWidget* menu_popover = nullptr;
 
 static GtkWidget* menu_history_btn = nullptr;
 static GtkWidget* menu_bookmark_btn = nullptr;
-static GtkWidget* menu_downloads_btn = nullptr;
 static GtkWidget* menu_cookies_btn = nullptr;
 static GtkWidget* menu_settings_btn = nullptr;
 static bool javascript_enabled = true;
@@ -481,11 +450,6 @@ struct WebProcessCrashState {
 };
 
 // 语言翻译辅助函数支持 zh, zh-TW, en
-const char* tr(const char* zh, const char* en) {
-    if (ui_language == "en") return en;
-    return zh;
-}
-
 const char* tr_full(const char* zh, const char* zh_tw, const char* en) {
     if (ui_language == "en") return en;
     if (ui_language == "zh-TW") return zh_tw;
@@ -724,65 +688,6 @@ void write_records(const std::string& file, const std::vector<RecordItem>& list)
         }
         fclose(f);
     }
-}
-
-void save_downloads() {
-    FILE* f = fopen(downloads_file.c_str(), "w");
-    if (!f) return;
-    for (const auto& item : download_list) {
-        int st = static_cast<int>(item->state);
-        if (item->state == DownloadItem::State::InProgress) {
-            st = static_cast<int>(DownloadItem::State::Cancelled);
-        }
-        fprintf(f, "%s|%s|%s|%s|%d|%llu|%llu\n",
-            sanitize_field(item->time).c_str(),
-            sanitize_field(item->filename).c_str(),
-            sanitize_field(item->url).c_str(),
-            sanitize_field(item->destination_path).c_str(),
-            st,
-            (unsigned long long)item->received_bytes,
-            (unsigned long long)item->total_bytes);
-    }
-    fclose(f);
-}
-
-void load_downloads() {
-    download_list.clear();
-    FILE* f = fopen(downloads_file.c_str(), "r");
-    if (!f) return;
-    char buf[4096];
-    while (fgets(buf, sizeof(buf), f)) {
-        std::string line(buf);
-        while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) line.pop_back();
-        std::vector<std::string> parts;
-        size_t start = 0;
-        while (true) {
-            size_t pos = line.find('|', start);
-            if (pos == std::string::npos) {
-                parts.push_back(line.substr(start));
-                break;
-            }
-            parts.push_back(line.substr(start, pos - start));
-            start = pos + 1;
-        }
-        if (parts.size() >= 7) {
-            auto item = std::make_shared<DownloadItem>();
-            item->id = next_download_id++;
-            item->time = parts[0];
-            item->filename = parts[1];
-            item->url = parts[2];
-            item->destination_path = parts[3];
-            int st = atoi(parts[4].c_str());
-            if (st == static_cast<int>(DownloadItem::State::Finished)) item->state = DownloadItem::State::Finished;
-            else if (st == static_cast<int>(DownloadItem::State::Failed)) item->state = DownloadItem::State::Failed;
-            else item->state = DownloadItem::State::Cancelled;
-            item->received_bytes = strtoull(parts[5].c_str(), nullptr, 10);
-            item->total_bytes = strtoull(parts[6].c_str(), nullptr, 10);
-            item->progress = (item->total_bytes > 0) ? std::min(1.0, (double)item->received_bytes / (double)item->total_bytes) : (item->state == DownloadItem::State::Finished ? 1.0 : 0.0);
-            download_list.push_back(item);
-        }
-    }
-    fclose(f);
 }
 
 void refresh_history_ui();
@@ -1039,20 +944,6 @@ void apply_app_theme() {
     if (main_window) gtk_widget_queue_draw(main_window);
 }
 
-void update_download_button_badge() {
-    if (!lbl_downloads_badge) return;
-    int active_count = 0;
-    for (const auto& item : download_list) {
-        if (item->state == DownloadItem::State::InProgress) active_count++;
-    }
-    if (active_count > 0) {
-        gtk_label_set_text(GTK_LABEL(lbl_downloads_badge), std::to_string(active_count).c_str());
-        gtk_widget_show(lbl_downloads_badge);
-    } else {
-        gtk_widget_hide(lbl_downloads_badge);
-    }
-}
-
 void update_navigation_state() {
     GtkWidget* cur_page = get_current_page_widget();
     const char* ptype = get_page_type(cur_page);
@@ -1066,7 +957,7 @@ void update_navigation_state() {
             gtk_widget_set_sensitive(btn_forward, !pref_forward_stack.empty());
             gtk_widget_queue_draw(btn_forward);
         }
-        const bool is_data_subpage = (pref_current_row >= 5 && pref_current_row <= 8);
+        const bool is_data_subpage = (pref_current_row >= 4 && pref_current_row <= 6);
         if (btn_refresh) {
             if (is_data_subpage) {
                 gtk_widget_show(btn_refresh);
@@ -1120,16 +1011,12 @@ void apply_ui_language() {
     if (btn_back) gtk_widget_set_tooltip_text(btn_back, tr_full("后退", "後退", "Back"));
     if (btn_forward) gtk_widget_set_tooltip_text(btn_forward, tr_full("前进", "前進", "Forward"));
     if (btn_bookmarks_menu) gtk_widget_set_tooltip_text(btn_bookmarks_menu, tr_full("书签", "書籤", "Bookmarks"));
-    if (btn_downloads) gtk_widget_set_tooltip_text(btn_downloads, tr_full("下载", "下載", "Downloads"));
     if (btn_menu) gtk_widget_set_tooltip_text(btn_menu, tr_full("打开应用菜单", "開啟應用選單", "Open application menu"));
     if (url_entry) gtk_entry_set_placeholder_text(GTK_ENTRY(url_entry), tr_full("搜索或输入网址", "搜尋或輸入網址", "Search or enter address"));
     if (bm_popover_title) gtk_label_set_text(GTK_LABEL(bm_popover_title), tr_full("书签", "書籤", "Bookmarks"));
     if (bm_popover_manage_btn) gtk_button_set_label(GTK_BUTTON(bm_popover_manage_btn), tr_full("打开书签管理", "開啟書籤管理", "Open Bookmarks Manager"));
-    if (dl_popover_title) gtk_label_set_text(GTK_LABEL(dl_popover_title), tr_full("最近下载", "最近下載", "Recent downloads"));
-    if (dl_popover_manage_btn) gtk_button_set_label(GTK_BUTTON(dl_popover_manage_btn), tr_full("打开下载管理", "開啟下載管理", "Open Downloads Manager"));
     if (menu_history_btn) gtk_button_set_label(GTK_BUTTON(menu_history_btn), tr_full("历史记录", "歷史記錄", "History"));
     if (menu_bookmark_btn) gtk_button_set_label(GTK_BUTTON(menu_bookmark_btn), tr_full("书签管理", "書籤管理", "Bookmarks"));
-    if (menu_downloads_btn) gtk_button_set_label(GTK_BUTTON(menu_downloads_btn), tr_full("下载管理", "下載管理", "Downloads"));
     if (menu_cookies_btn) gtk_button_set_label(GTK_BUTTON(menu_cookies_btn), "Cookies");
     if (menu_settings_btn) gtk_button_set_label(GTK_BUTTON(menu_settings_btn), tr_full("设置", "設定", "Settings"));
 
@@ -1189,167 +1076,6 @@ void save_settings() {
     fclose(f);
 }
 
-void refresh_download_row_ui(const std::shared_ptr<DownloadItem>& item) {
-    if (!item || !active_download_listbox) return;
-    if (item->name_label && GTK_IS_LABEL(item->name_label)) {
-        gtk_label_set_text(GTK_LABEL(item->name_label), item->filename.c_str());
-    }
-    if (item->progress_widget && GTK_IS_PROGRESS_BAR(item->progress_widget)) {
-        if (item->state == DownloadItem::State::InProgress) {
-            gtk_widget_show(item->progress_widget);
-            if (item->total_bytes > 0) {
-                gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(item->progress_widget), std::max(0.0, std::min(1.0, item->progress)));
-            } else {
-                gtk_progress_bar_pulse(GTK_PROGRESS_BAR(item->progress_widget));
-            }
-        } else {
-            gtk_widget_hide(item->progress_widget);
-        }
-    }
-    if (item->info_label && GTK_IS_LABEL(item->info_label)) {
-        std::string info;
-        if (item->state == DownloadItem::State::InProgress) {
-            std::string recv_str = format_bytes(item->received_bytes);
-            std::string spd_str = format_bytes((guint64)std::max(0.0, item->speed_bps)) + "/s";
-            if (item->total_bytes > 0) {
-                int pct = (int)std::round(item->progress * 100.0);
-                info = recv_str + " / " + format_bytes(item->total_bytes) + "  ·  " + spd_str + "  ·  " + std::to_string(pct) + "%";
-            } else {
-                info = recv_str + "  ·  " + spd_str;
-            }
-        } else if (item->state == DownloadItem::State::Finished) {
-            guint64 final_size = item->total_bytes > 0 ? item->total_bytes : item->received_bytes;
-            info = format_bytes(final_size) + "  ·  " + tr_full("已完成", "已完成", "Completed") + "  ·  " + item->destination_path;
-        } else if (item->state == DownloadItem::State::Cancelled) {
-            info = tr_full("已取消", "已取消", "Cancelled") + std::string("  ·  ") + item->time;
-        } else {
-            info = tr_full("下载失败", "下載失敗", "Failed") + (!item->error_msg.empty() ? ": " + item->error_msg : "");
-        }
-        gtk_label_set_text(GTK_LABEL(item->info_label), info.c_str());
-    }
-    if (item->cancel_btn && GTK_IS_WIDGET(item->cancel_btn)) {
-        gtk_widget_set_visible(item->cancel_btn, item->state == DownloadItem::State::InProgress);
-    }
-    if (item->check_btn && GTK_IS_TOGGLE_BUTTON(item->check_btn)) {
-        const bool can_select = (item->state != DownloadItem::State::InProgress);
-        if (!can_select) item->selected = false;
-        gtk_widget_set_visible(item->check_btn, active_download_multi_mode);
-        gtk_widget_set_sensitive(item->check_btn, can_select);
-        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(item->check_btn), can_select && item->selected);
-    }
-}
-
-void clear_download_row_widgets() {
-    for (const auto& item : download_list) {
-        item->row = nullptr;
-        item->check_btn = nullptr;
-        item->name_label = nullptr;
-        item->progress_widget = nullptr;
-        item->info_label = nullptr;
-        item->cancel_btn = nullptr;
-    }
-}
-
-void rebuild_download_list_ui(GtkWidget* target_listbox, bool multi_mode) {
-    if (!target_listbox || !GTK_IS_LIST_BOX(target_listbox)) return;
-    clear_download_row_widgets();
-    active_download_listbox = target_listbox;
-    active_download_multi_mode = multi_mode;
-
-    GList* children = gtk_container_get_children(GTK_CONTAINER(target_listbox));
-    for (GList* l = children; l != nullptr; l = l->next) {
-        gtk_widget_destroy(GTK_WIDGET(l->data));
-    }
-    g_list_free(children);
-
-    if (download_list.empty()) {
-        GtkWidget* empty_row = gtk_list_box_row_new();
-        gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(empty_row), FALSE);
-        gtk_list_box_row_set_selectable(GTK_LIST_BOX_ROW(empty_row), FALSE);
-        GtkWidget* lbl = gtk_label_new(tr_full("暂无下载记录", "暫無下載記錄", "No downloads yet"));
-        gtk_container_set_border_width(GTK_CONTAINER(lbl), 18);
-        gtk_container_add(GTK_CONTAINER(empty_row), lbl);
-        gtk_widget_show_all(empty_row);
-        gtk_list_box_insert(GTK_LIST_BOX(target_listbox), empty_row, -1);
-        return;
-    }
-
-    for (auto it = download_list.rbegin(); it != download_list.rend(); ++it) {
-        auto item = *it;
-        item->row = gtk_list_box_row_new();
-        gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(item->row), FALSE);
-        gtk_list_box_row_set_selectable(GTK_LIST_BOX_ROW(item->row), FALSE);
-
-        GtkWidget* hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-        gtk_container_set_border_width(GTK_CONTAINER(hbox), 8);
-
-        item->check_btn = gtk_check_button_new();
-        gtk_widget_set_valign(item->check_btn, GTK_ALIGN_CENTER);
-        auto* check_holder = new std::weak_ptr<DownloadItem>(item);
-        g_signal_connect_data(item->check_btn, "toggled", G_CALLBACK(+[](GtkToggleButton* btn, gpointer data) {
-            auto* wp = static_cast<std::weak_ptr<DownloadItem>*>(data);
-            if (auto sp = wp->lock()) {
-                if (sp->state == DownloadItem::State::InProgress) {
-                    sp->selected = false;
-                    if (gtk_toggle_button_get_active(btn)) gtk_toggle_button_set_active(btn, FALSE);
-                } else {
-                    sp->selected = gtk_toggle_button_get_active(btn);
-                }
-            }
-        }), check_holder, +[](gpointer data, GClosure*) {
-            delete static_cast<std::weak_ptr<DownloadItem>*>(data);
-        }, (GConnectFlags)0);
-        gtk_box_pack_start(GTK_BOX(hbox), item->check_btn, FALSE, FALSE, 0);
-
-        GtkWidget* mid_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
-        gtk_widget_set_hexpand(mid_vbox, TRUE);
-
-        item->name_label = gtk_label_new(item->filename.c_str());
-        gtk_label_set_xalign(GTK_LABEL(item->name_label), 0.0f);
-        gtk_label_set_ellipsize(GTK_LABEL(item->name_label), PANGO_ELLIPSIZE_MIDDLE);
-        gtk_label_set_width_chars(GTK_LABEL(item->name_label), 14);
-        gtk_label_set_max_width_chars(GTK_LABEL(item->name_label), 28);
-        gtk_widget_set_hexpand(item->name_label, TRUE);
-        gtk_box_pack_start(GTK_BOX(mid_vbox), item->name_label, FALSE, FALSE, 0);
-
-        item->progress_widget = gtk_progress_bar_new();
-        gtk_widget_set_hexpand(item->progress_widget, TRUE);
-        gtk_box_pack_start(GTK_BOX(mid_vbox), item->progress_widget, FALSE, FALSE, 0);
-
-        item->info_label = gtk_label_new("");
-        gtk_label_set_xalign(GTK_LABEL(item->info_label), 0.0f);
-        gtk_label_set_ellipsize(GTK_LABEL(item->info_label), PANGO_ELLIPSIZE_END);
-        gtk_label_set_width_chars(GTK_LABEL(item->info_label), 14);
-        gtk_label_set_max_width_chars(GTK_LABEL(item->info_label), 32);
-        gtk_widget_set_hexpand(item->info_label, TRUE);
-        gtk_box_pack_start(GTK_BOX(mid_vbox), item->info_label, FALSE, FALSE, 0);
-
-        gtk_box_pack_start(GTK_BOX(hbox), mid_vbox, TRUE, TRUE, 0);
-
-        item->cancel_btn = gtk_button_new();
-        gtk_container_add(GTK_CONTAINER(item->cancel_btn), create_vector_icon(ICON_CLOSE, 14));
-        gtk_widget_set_valign(item->cancel_btn, GTK_ALIGN_CENTER);
-        gtk_widget_set_tooltip_text(item->cancel_btn, tr_full("终止下载", "終止下載", "Cancel download"));
-        auto* cancel_holder = new std::weak_ptr<DownloadItem>(item);
-        g_signal_connect_data(item->cancel_btn, "clicked", G_CALLBACK(+[](GtkButton*, gpointer data) {
-            auto* wp = static_cast<std::weak_ptr<DownloadItem>*>(data);
-            if (auto sp = wp->lock()) {
-                if (sp->state == DownloadItem::State::InProgress && sp->wk_download) {
-                    webkit_download_cancel(sp->wk_download);
-                }
-            }
-        }), cancel_holder, +[](gpointer data, GClosure*) {
-            delete static_cast<std::weak_ptr<DownloadItem>*>(data);
-        }, (GConnectFlags)0);
-        gtk_box_pack_end(GTK_BOX(hbox), item->cancel_btn, FALSE, FALSE, 0);
-
-        gtk_container_add(GTK_CONTAINER(item->row), hbox);
-        gtk_widget_show_all(item->row);
-        refresh_download_row_ui(item);
-        gtk_list_box_insert(GTK_LIST_BOX(target_listbox), item->row, -1);
-    }
-}
-
 static std::string extract_filename_from_url(const std::string& url) {
     if (url.empty()) return "";
     std::string clean = url;
@@ -1387,28 +1113,20 @@ static std::string make_unique_download_path(const std::string& dir, const std::
 
 void on_download_started(WebKitWebContext*, WebKitDownload* download, gpointer) {
     if (!download) return;
-    auto item = std::make_shared<DownloadItem>();
-    item->id = next_download_id++;
-    item->time = now_time_string();
-    item->start_time_us = g_get_monotonic_time();
-    item->last_speed_time_us = item->start_time_us;
-    item->state = DownloadItem::State::InProgress;
+    auto item = std::make_shared<DownloadCliItem>();
+    item->last_log_time_us = g_get_monotonic_time();
     item->wk_download = WEBKIT_DOWNLOAD(g_object_ref(download));
 
     WebKitURIRequest* req = webkit_download_get_request(download);
     const gchar* uri = req ? webkit_uri_request_get_uri(req) : nullptr;
     item->url = uri ? uri : "";
-    item->filename = tr_full("正在获取文件名...", "正在取得檔案名稱...", "Fetching filename...");
-    download_list.push_back(item);
-    update_download_button_badge();
+    std::string fallback_name = extract_filename_from_url(item->url);
+    item->filename = fallback_name.empty() ? "download" : fallback_name;
+    active_cli_downloads.push_back(item);
 
-    if (active_download_listbox) {
-        rebuild_download_list_ui(active_download_listbox, active_download_multi_mode);
-    }
-
-    auto* decide_holder = new std::shared_ptr<DownloadItem>(item);
+    auto* decide_holder = new std::shared_ptr<DownloadCliItem>(item);
     g_signal_connect_data(download, "decide-destination", G_CALLBACK(+[](WebKitDownload* dl, const gchar* suggested_filename, gpointer data) -> gboolean {
-        auto* sp = static_cast<std::shared_ptr<DownloadItem>*>(data);
+        auto* sp = static_cast<std::shared_ptr<DownloadCliItem>*>(data);
         auto item = *sp;
         std::string fname = (suggested_filename && *suggested_filename) ? suggested_filename : extract_filename_from_url(item->url);
         if (fname.empty()) fname = "download";
@@ -1421,16 +1139,18 @@ void on_download_started(WebKitWebContext*, WebKitDownload* download, gpointer) 
             webkit_download_set_destination(dl, file_uri);
             g_free(file_uri);
         }
+        std::fprintf(stdout, "[Download] 开始下载: %s\n  保存路径: %s\n  来源网址: %s\n",
+            item->filename.c_str(), item->destination_path.c_str(), item->url.c_str());
+        std::fflush(stdout);
         update_status_text((std::string(tr_full("开始下载: ", "開始下載: ", "Downloading: ")) + item->filename).c_str(), TRUE);
-        refresh_download_row_ui(item);
         return TRUE;
     }), decide_holder, +[](gpointer data, GClosure*) {
-        delete static_cast<std::shared_ptr<DownloadItem>*>(data);
+        delete static_cast<std::shared_ptr<DownloadCliItem>*>(data);
     }, (GConnectFlags)0);
 
-    auto* recv_holder = new std::shared_ptr<DownloadItem>(item);
+    auto* recv_holder = new std::shared_ptr<DownloadCliItem>(item);
     g_signal_connect_data(download, "received-data", G_CALLBACK(+[](WebKitDownload* dl, guint64, gpointer data) {
-        auto* sp = static_cast<std::shared_ptr<DownloadItem>*>(data);
+        auto* sp = static_cast<std::shared_ptr<DownloadCliItem>*>(data);
         auto item = *sp;
         item->received_bytes = webkit_download_get_received_data_length(dl);
         item->progress = webkit_download_get_estimated_progress(dl);
@@ -1440,61 +1160,73 @@ void on_download_started(WebKitWebContext*, WebKitDownload* download, gpointer) 
             if (cl > 0) item->total_bytes = cl;
         }
         gint64 now_us = g_get_monotonic_time();
-        gint64 dt = now_us - item->last_speed_time_us;
-        if (dt >= 400000) {
-            guint64 dbytes = (item->received_bytes >= item->last_speed_bytes) ? (item->received_bytes - item->last_speed_bytes) : 0;
+        gint64 dt = now_us - item->last_log_time_us;
+        if (dt >= 500000) {
+            guint64 dbytes = (item->received_bytes >= item->last_log_bytes) ? (item->received_bytes - item->last_log_bytes) : 0;
             item->speed_bps = (double)dbytes / ((double)dt / (double)G_USEC_PER_SEC);
-            item->last_speed_time_us = now_us;
-            item->last_speed_bytes = item->received_bytes;
+            item->last_log_time_us = now_us;
+            item->last_log_bytes = item->received_bytes;
+
+            std::string recv_str = format_bytes(item->received_bytes);
+            std::string spd_str = format_bytes((guint64)std::max(0.0, item->speed_bps)) + "/s";
+            if (item->total_bytes > 0) {
+                int pct = (int)std::round(item->progress * 100.0);
+                std::fprintf(stdout, "[Download] %s | %s / %s (%d%%) | %s\n",
+                    item->filename.c_str(), recv_str.c_str(), format_bytes(item->total_bytes).c_str(), pct, spd_str.c_str());
+            } else {
+                std::fprintf(stdout, "[Download] %s | %s | %s\n",
+                    item->filename.c_str(), recv_str.c_str(), spd_str.c_str());
+            }
+            std::fflush(stdout);
         }
-        refresh_download_row_ui(item);
     }), recv_holder, +[](gpointer data, GClosure*) {
-        delete static_cast<std::shared_ptr<DownloadItem>*>(data);
+        delete static_cast<std::shared_ptr<DownloadCliItem>*>(data);
     }, (GConnectFlags)0);
 
-    auto* fin_holder = new std::shared_ptr<DownloadItem>(item);
+    auto* fin_holder = new std::shared_ptr<DownloadCliItem>(item);
     g_signal_connect_data(download, "finished", G_CALLBACK(+[](WebKitDownload* dl, gpointer data) {
-        auto* sp = static_cast<std::shared_ptr<DownloadItem>*>(data);
+        auto* sp = static_cast<std::shared_ptr<DownloadCliItem>*>(data);
         auto item = *sp;
-        if (item->state == DownloadItem::State::InProgress) {
-            item->state = DownloadItem::State::Finished;
-            item->received_bytes = webkit_download_get_received_data_length(dl);
-            if (item->total_bytes == 0) item->total_bytes = item->received_bytes;
-            item->progress = 1.0;
-            update_status_text((std::string(tr_full("下载完成: ", "下載完成: ", "Download finished: ")) + item->filename).c_str(), TRUE);
-        }
+        item->received_bytes = webkit_download_get_received_data_length(dl);
+        if (item->total_bytes == 0) item->total_bytes = item->received_bytes;
+        std::fprintf(stdout, "[Download] 下载完成: %s (%s) -> %s\n",
+            item->filename.c_str(), format_bytes(item->total_bytes).c_str(), item->destination_path.c_str());
+        std::fflush(stdout);
+        update_status_text((std::string(tr_full("下载完成: ", "下載完成: ", "Download finished: ")) + item->filename).c_str(), TRUE);
         if (item->wk_download) {
             g_object_unref(item->wk_download);
             item->wk_download = nullptr;
         }
-        save_downloads();
-        update_download_button_badge();
-        refresh_download_row_ui(item);
+        active_cli_downloads.erase(
+            std::remove(active_cli_downloads.begin(), active_cli_downloads.end(), item),
+            active_cli_downloads.end()
+        );
     }), fin_holder, +[](gpointer data, GClosure*) {
-        delete static_cast<std::shared_ptr<DownloadItem>*>(data);
+        delete static_cast<std::shared_ptr<DownloadCliItem>*>(data);
     }, (GConnectFlags)0);
 
-    auto* fail_holder = new std::shared_ptr<DownloadItem>(item);
-    g_signal_connect_data(download, "failed", G_CALLBACK(+[](WebKitDownload* dl, GError* error, gpointer data) {
-        auto* sp = static_cast<std::shared_ptr<DownloadItem>*>(data);
+    auto* fail_holder = new std::shared_ptr<DownloadCliItem>(item);
+    g_signal_connect_data(download, "failed", G_CALLBACK(+[](WebKitDownload*, GError* error, gpointer data) {
+        auto* sp = static_cast<std::shared_ptr<DownloadCliItem>*>(data);
         auto item = *sp;
         if (error && g_error_matches(error, WEBKIT_DOWNLOAD_ERROR, WEBKIT_DOWNLOAD_ERROR_CANCELLED_BY_USER)) {
-            item->state = DownloadItem::State::Cancelled;
+            std::fprintf(stdout, "[Download] 已取消下载: %s\n", item->filename.c_str());
             update_status_text((std::string(tr_full("已取消下载: ", "已取消下載: ", "Download cancelled: ")) + item->filename).c_str(), TRUE);
         } else {
-            item->state = DownloadItem::State::Failed;
-            item->error_msg = (error && error->message) ? error->message : "Unknown error";
+            std::fprintf(stdout, "[Download] 下载失败: %s (%s)\n", item->filename.c_str(), error && error->message ? error->message : "unknown");
             update_status_text((std::string(tr_full("下载失败: ", "下載失敗: ", "Download failed: ")) + item->filename).c_str(), TRUE);
         }
+        std::fflush(stdout);
         if (item->wk_download) {
             g_object_unref(item->wk_download);
             item->wk_download = nullptr;
         }
-        save_downloads();
-        update_download_button_badge();
-        refresh_download_row_ui(item);
+        active_cli_downloads.erase(
+            std::remove(active_cli_downloads.begin(), active_cli_downloads.end(), item),
+            active_cli_downloads.end()
+        );
     }), fail_holder, +[](gpointer data, GClosure*) {
-        delete static_cast<std::shared_ptr<DownloadItem>*>(data);
+        delete static_cast<std::shared_ptr<DownloadCliItem>*>(data);
     }, (GConnectFlags)0);
 }
 
@@ -1588,7 +1320,6 @@ void rebuild_bookmark_popover_ui() {
 
 int record_selected_column(GtkTreeModel* model) {
     const int count = gtk_tree_model_get_n_columns(model);
-    if (count == 3) return 1; // 日志
     if (count == 4) return 2; // Cookies
     return REC_SELECTED;      // 历史记录与收藏
 }
@@ -1641,14 +1372,13 @@ void on_record_row_activated(GtkTreeView* tree, GtkTreePath* path, GtkTreeViewCo
     }
 }
 
-GtkWidget* create_record_tree(GtkListStore* store, bool log_mode) {
+GtkWidget* create_record_tree(GtkListStore* store) {
     GtkWidget* tree = gtk_tree_view_new_with_model(GTK_TREE_MODEL(store));
 
     {
         GtkCellRenderer* toggle = gtk_cell_renderer_toggle_new();
-        const int selected_col = log_mode ? 1 : REC_SELECTED;
         GtkTreeViewColumn* select_col = gtk_tree_view_column_new_with_attributes(
-            tr_full("选择", "選擇", "Select"), toggle, "active", selected_col, NULL);
+            tr_full("选择", "選擇", "Select"), toggle, "active", REC_SELECTED, NULL);
         gtk_tree_view_append_column(GTK_TREE_VIEW(tree), select_col);
         record_selection_columns.push_back(select_col);
         g_signal_connect(toggle, "toggled", G_CALLBACK(on_record_toggle), store);
@@ -1658,40 +1388,36 @@ GtkWidget* create_record_tree(GtkListStore* store, bool log_mode) {
     g_object_set(text, "ellipsize", PANGO_ELLIPSIZE_END, "ellipsize-set", TRUE,
                  "width-chars", 20, "max-width-chars", 34, NULL);
     GtkTreeViewColumn* col = gtk_tree_view_column_new_with_attributes(
-        log_mode ? tr_full("日志内容", "日誌內容", "Log entry") : tr_full("网页标题", "網頁標題", "Page title"),
-        text, "text", 0, NULL);
+        tr_full("网页标题", "網頁標題", "Page title"), text, "text", REC_TEXT, NULL);
     gtk_tree_view_column_set_expand(col, TRUE);
     gtk_tree_view_column_set_resizable(col, TRUE);
     gtk_tree_view_append_column(GTK_TREE_VIEW(tree), col);
 
-    if (!log_mode) {
-        text = gtk_cell_renderer_text_new();
-        g_object_set(text, "ellipsize", PANGO_ELLIPSIZE_END, "ellipsize-set", TRUE,
-                     "width-chars", 22, "max-width-chars", 38, NULL);
-        col = gtk_tree_view_column_new_with_attributes(tr_full("网址", "網址", "Address"), text, "text", REC_URL, NULL);
-        gtk_tree_view_column_set_expand(col, TRUE);
-        gtk_tree_view_column_set_resizable(col, TRUE);
-        gtk_tree_view_append_column(GTK_TREE_VIEW(tree), col);
-        text = gtk_cell_renderer_text_new();
-        g_object_set(text, "ellipsize", PANGO_ELLIPSIZE_END, "ellipsize-set", TRUE,
-                     "width-chars", 17, "max-width-chars", 22, NULL);
-        col = gtk_tree_view_column_new_with_attributes(tr_full("时间", "時間", "Time"), text, "text", REC_TIME, NULL);
-        gtk_tree_view_column_set_resizable(col, TRUE);
-        gtk_tree_view_append_column(GTK_TREE_VIEW(tree), col);
-    }
-    if (!log_mode) {
-        g_signal_connect(tree, "button-press-event",
-                         G_CALLBACK(on_record_button_press), nullptr);
-        g_signal_connect(tree, "row-activated",
-                         G_CALLBACK(on_record_row_activated), nullptr);
-    }
+    text = gtk_cell_renderer_text_new();
+    g_object_set(text, "ellipsize", PANGO_ELLIPSIZE_END, "ellipsize-set", TRUE,
+                 "width-chars", 22, "max-width-chars", 38, NULL);
+    col = gtk_tree_view_column_new_with_attributes(tr_full("网址", "網址", "Address"), text, "text", REC_URL, NULL);
+    gtk_tree_view_column_set_expand(col, TRUE);
+    gtk_tree_view_column_set_resizable(col, TRUE);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(tree), col);
+
+    text = gtk_cell_renderer_text_new();
+    g_object_set(text, "ellipsize", PANGO_ELLIPSIZE_END, "ellipsize-set", TRUE,
+                 "width-chars", 17, "max-width-chars", 22, NULL);
+    col = gtk_tree_view_column_new_with_attributes(tr_full("时间", "時間", "Time"), text, "text", REC_TIME, NULL);
+    gtk_tree_view_column_set_resizable(col, TRUE);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(tree), col);
+
+    g_signal_connect(tree, "button-press-event",
+                     G_CALLBACK(on_record_button_press), nullptr);
+    g_signal_connect(tree, "row-activated",
+                     G_CALLBACK(on_record_row_activated), nullptr);
     return tree;
 }
 
 void set_record_multi_mode(bool enabled) {
     record_multi_mode = enabled;
-    active_download_multi_mode = enabled;
-    const bool is_cookies = (pref_current_row == 8);
+    const bool is_cookies = (pref_current_row == 6);
     if (record_multi_button) gtk_button_set_label(GTK_BUTTON(record_multi_button), enabled ? tr_full("退出多选", "退出多選", "Exit selection") : tr_full("多选", "多選", "Select"));
     if (record_select_all_button) gtk_widget_set_visible(record_select_all_button, enabled);
     if (record_invert_button) gtk_widget_set_visible(record_invert_button, enabled);
@@ -1699,31 +1425,18 @@ void set_record_multi_mode(bool enabled) {
     if (record_copy_button) gtk_widget_set_visible(record_copy_button, enabled);
     for (GtkTreeViewColumn* column : record_selection_columns)
         gtk_tree_view_column_set_visible(column, enabled);
-    for (const auto& item : download_list) {
-        if (!enabled) item->selected = false;
-        refresh_download_row_ui(item);
-    }
 }
 
 GtkListStore* current_pref_data_store() {
-    if (pref_current_row == 5) return history_store;
-    if (pref_current_row == 6) return bookmark_store;
-    if (pref_current_row == 8) return cookie_store;
+    if (pref_current_row == 4) return history_store;
+    if (pref_current_row == 5) return bookmark_store;
+    if (pref_current_row == 6) return cookie_store;
     return nullptr;
 }
 
 void on_record_multi(GtkWidget*, gpointer) { set_record_multi_mode(!record_multi_mode); }
 
 void on_record_select_all(GtkWidget*, gpointer) {
-    if (pref_current_row == 7) {
-        for (const auto& item : download_list) {
-            if (item->state != DownloadItem::State::InProgress) {
-                item->selected = true;
-                refresh_download_row_ui(item);
-            }
-        }
-        return;
-    }
     GtkListStore* store = current_pref_data_store();
     if (!store) return;
     GtkTreeIter iter;
@@ -1736,15 +1449,6 @@ void on_record_select_all(GtkWidget*, gpointer) {
 }
 
 void on_record_invert(GtkWidget*, gpointer) {
-    if (pref_current_row == 7) {
-        for (const auto& item : download_list) {
-            if (item->state != DownloadItem::State::InProgress) {
-                item->selected = !item->selected;
-                refresh_download_row_ui(item);
-            }
-        }
-        return;
-    }
     GtkListStore* store = current_pref_data_store();
     if (!store) return;
     GtkTreeIter iter;
@@ -1760,14 +1464,7 @@ void on_record_invert(GtkWidget*, gpointer) {
 
 void on_record_copy_selected(GtkWidget*, gpointer) {
     std::string copied;
-    if (pref_current_row == 7) {
-        for (auto it = download_list.rbegin(); it != download_list.rend(); ++it) {
-            const auto& item = *it;
-            if (item->state != DownloadItem::State::InProgress && item->selected) {
-                copied += item->filename + "\t" + item->url + "\t" + item->destination_path + "\t" + item->time + "\n";
-            }
-        }
-    } else {
+    {
         GtkListStore* store = current_pref_data_store();
         if (!store) return;
         GtkTreeIter iter;
@@ -1777,10 +1474,10 @@ void on_record_copy_selected(GtkWidget*, gpointer) {
             gtk_tree_model_get(GTK_TREE_MODEL(store), &iter, record_selected_column(GTK_TREE_MODEL(store)), &selected, -1);
             if (selected) {
                 gchar *a = nullptr, *b = nullptr, *c = nullptr;
-                if (pref_current_row == 5 || pref_current_row == 6) {
+                if (pref_current_row == 4 || pref_current_row == 5) {
                     gtk_tree_model_get(GTK_TREE_MODEL(store), &iter, REC_TEXT, &a, REC_URL, &b, REC_TIME, &c, -1);
                     copied += (a ? a : "") + std::string("\t") + (b ? b : "") + "\t" + (c ? c : "") + "\n";
-                } else if (pref_current_row == 8) {
+                } else if (pref_current_row == 6) {
                     gtk_tree_model_get(GTK_TREE_MODEL(store), &iter, 0, &a, 1, &b, -1);
                     copied += std::string(a ? a : "") + "\t" + (b ? b : "") + "\n";
                 } else {
@@ -1802,18 +1499,7 @@ void on_record_copy_selected(GtkWidget*, gpointer) {
 }
 
 void on_record_delete_selected(GtkWidget*, gpointer) {
-    if (pref_current_row == 8) return;
-    if (pref_current_row == 7) {
-        download_list.erase(
-            std::remove_if(download_list.begin(), download_list.end(), [](const std::shared_ptr<DownloadItem>& item) {
-                return item->state != DownloadItem::State::InProgress && item->selected;
-            }),
-            download_list.end()
-        );
-        save_downloads();
-        if (active_download_listbox) rebuild_download_list_ui(active_download_listbox, active_download_multi_mode);
-        return;
-    }
+    if (pref_current_row == 6) return;
     GtkListStore* store = current_pref_data_store();
     if (!store) return;
     std::vector<int> indices;
@@ -1822,20 +1508,19 @@ void on_record_delete_selected(GtkWidget*, gpointer) {
     while (valid) {
         gboolean selected = FALSE;
         gint index = -1;
-        const bool log_mode = (pref_current_row == 9);
         gtk_tree_model_get(GTK_TREE_MODEL(store), &iter,
-            log_mode ? 1 : REC_SELECTED, &selected,
-            log_mode ? 2 : REC_INDEX, &index, -1);
+            REC_SELECTED, &selected,
+            REC_INDEX, &index, -1);
         if (selected && index >= 0) indices.push_back(index);
         valid = gtk_tree_model_iter_next(GTK_TREE_MODEL(store), &iter);
     }
     std::sort(indices.rbegin(), indices.rend());
     for (int index : indices) {
-        if (pref_current_row == 5 && index < (int)history_list.size()) history_list.erase(history_list.begin() + index);
-        else if (pref_current_row == 6 && index < (int)bookmark_list.size()) bookmark_list.erase(bookmark_list.begin() + index);
+        if (pref_current_row == 4 && index < (int)history_list.size()) history_list.erase(history_list.begin() + index);
+        else if (pref_current_row == 5 && index < (int)bookmark_list.size()) bookmark_list.erase(bookmark_list.begin() + index);
     }
-    if (pref_current_row == 5) { write_records(history_file, history_list); refresh_history_ui(); }
-    else if (pref_current_row == 6) { write_records(bookmark_file, bookmark_list); refresh_bookmark_ui(); update_navigation_state(); }
+    if (pref_current_row == 4) { write_records(history_file, history_list); refresh_history_ui(); }
+    else if (pref_current_row == 5) { write_records(bookmark_file, bookmark_list); refresh_bookmark_ui(); update_navigation_state(); }
 }
 
 void on_cookies_fetched(GObject* source_object, GAsyncResult* res, gpointer user_data) {
@@ -1906,10 +1591,9 @@ void on_bookmark(GtkWidget* w, gpointer d) {
 void apply_page_zoom(GtkWidget* view);
 
 const char* get_current_preferences_url() {
-    if (pref_current_row == 5) return "about:history";
-    if (pref_current_row == 6) return "about:bookmarks";
-    if (pref_current_row == 7) return "about:downloads";
-    if (pref_current_row == 8) return "about:cookies";
+    if (pref_current_row == 4) return "about:history";
+    if (pref_current_row == 5) return "about:bookmarks";
+    if (pref_current_row == 6) return "about:cookies";
     return "about:preferences";
 }
 
@@ -2493,19 +2177,9 @@ void on_url_activate(GtkWidget* widget, gpointer data) {
         open_preferences_tab("bookmarks");
         return;
     }
-    if (raw == "about:downloads") {
-        is_typing = FALSE;
-        open_preferences_tab("downloads_list");
-        return;
-    }
     if (raw == "about:cookies") {
         is_typing = FALSE;
         open_preferences_tab("cookies");
-        return;
-    }
-    if (raw == "about:logs") {
-        is_typing = FALSE;
-        open_preferences_tab("logs");
         return;
     }
 
@@ -2700,11 +2374,10 @@ void sync_tab_bar() {
 
         bool is_pref = (strcmp(ptype, "preferences") == 0);
         if (is_pref) {
-            if (pref_current_row == 5) display_title = tr_full("历史记录", "歷史記錄", "History");
-            else if (pref_current_row == 6) display_title = tr_full("书签管理", "書籤管理", "Bookmarks");
-            else if (pref_current_row == 7) display_title = tr_full("下载管理", "下載管理", "Downloads");
-            else if (pref_current_row == 8) display_title = "Cookies";
-            else if (pref_current_row == 9) display_title = tr_full("关于 WebBrowser", "關於 WebBrowser", "About WebBrowser");
+            if (pref_current_row == 4) display_title = tr_full("历史记录", "歷史記錄", "History");
+            else if (pref_current_row == 5) display_title = tr_full("书签管理", "書籤管理", "Bookmarks");
+            else if (pref_current_row == 6) display_title = "Cookies";
+            else if (pref_current_row == 7) display_title = tr_full("关于 WebBrowser", "關於 WebBrowser", "About WebBrowser");
             else display_title = tr_full("设置", "設定", "Settings");
         } else {
             GtkWidget* wv = get_webview_from_page(page);
@@ -2722,7 +2395,7 @@ void sync_tab_bar() {
         gtk_style_context_add_class(gtk_widget_get_style_context(tab_btn), "flat");
         GtkWidget* tab_inner = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
         if (is_pref) {
-            if (pref_current_row == 9) {
+            if (pref_current_row == 7) {
                 GdkPixbuf* logo_pb = gdk_pixbuf_new_from_file_at_scale(app_icon_path.c_str(), 14, 14, TRUE, NULL);
                 if (logo_pb) {
                     GtkWidget* logo_img = gtk_image_new_from_pixbuf(logo_pb);
@@ -2735,10 +2408,9 @@ void sync_tab_bar() {
                 }
             } else {
                 IconType picon = ICON_SETTINGS;
-                if (pref_current_row == 5) picon = ICON_HISTORY;
-                else if (pref_current_row == 6) picon = ICON_BOOKMARKS;
-                else if (pref_current_row == 7) picon = ICON_DOWNLOAD;
-                else if (pref_current_row == 8) picon = ICON_COOKIE;
+                if (pref_current_row == 4) picon = ICON_HISTORY;
+                else if (pref_current_row == 5) picon = ICON_BOOKMARKS;
+                else if (pref_current_row == 6) picon = ICON_COOKIE;
                 gtk_box_pack_start(GTK_BOX(tab_inner), create_vector_icon(picon, 14), FALSE, FALSE, 0);
             }
         } else {
@@ -2879,14 +2551,6 @@ void update_pref_action_bars_visibility() {
         }
         gtk_widget_set_visible(pref_srch_action_bar, dirty);
     }
-    if (pref_dl_action_bar) {
-        bool dirty = false;
-        if (pref_dl_entry) {
-            std::string val = trim_whitespace(gtk_entry_get_text(GTK_ENTRY(pref_dl_entry)));
-            if (val != download_dir) dirty = true;
-        }
-        gtk_widget_set_visible(pref_dl_action_bar, dirty);
-    }
     if (pref_priv_action_bar) {
         bool dirty = false;
         if (pref_cookie_combo) {
@@ -2913,7 +2577,6 @@ void reset_all_pref_drafts() {
     if (pref_lang_combo) gtk_combo_box_set_active_id(GTK_COMBO_BOX(pref_lang_combo), ui_language.c_str());
     if (pref_zoom_scale) gtk_range_set_value(GTK_RANGE(pref_zoom_scale), page_zoom_percent);
     if (pref_search_combo) gtk_combo_box_set_active_id(GTK_COMBO_BOX(pref_search_combo), search_engine.c_str());
-    if (pref_dl_entry) gtk_entry_set_text(GTK_ENTRY(pref_dl_entry), download_dir.c_str());
     if (pref_cookie_combo) gtk_combo_box_set_active_id(GTK_COMBO_BOX(pref_cookie_combo), cookie_policy.c_str());
     if (pref_media_check) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(pref_media_check), media_requires_gesture);
     if (pref_tls_check) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(pref_tls_check), ignore_tls_errors);
@@ -2975,8 +2638,6 @@ void on_switch_page(GtkNotebook* nb, GtkWidget* page, guint page_num, gpointer d
             gtk_widget_show(progress_bar);
             gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(progress_bar), p);
             update_status_text(tr_full("正在加载...", "正在載入...", "Loading..."), FALSE);
-            if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(webview), "wb_load_committed")) != 0) {
-                }
         } else {
             gtk_widget_hide(progress_bar);
             if (status_overlay) gtk_widget_hide(status_overlay);
@@ -3033,20 +2694,12 @@ void on_refresh(GtkWidget* w, gpointer d) {
         refresh_history_ui();
         refresh_bookmark_ui();
         refresh_cookies_from_manager();
-        if (pref_dl_listbox) rebuild_download_list_ui(pref_dl_listbox, record_multi_mode);
         update_status_text(tr_full("已刷新", "已重新整理", "Refreshed"), TRUE);
         return;
     }
     GtkWidget* wv = get_webview_from_page(cur_page);
     if (!wv) return;
     webkit_web_view_reload(WEBKIT_WEB_VIEW(wv));
-}
-
-void on_new_tab(GtkWidget* w, gpointer d) { add_tab(get_home_url().c_str()); }
-
-void on_close_tab(GtkWidget* w, gpointer d) {
-    if (!notebook || !GTK_IS_NOTEBOOK(notebook)) return;
-    close_tab_at_index(gtk_notebook_get_current_page(GTK_NOTEBOOK(notebook)));
 }
 
 // Firefox 风格内嵌设置子页面 (about:preferences)
@@ -3057,14 +2710,12 @@ void open_preferences_tab(const char* section_name) {
     auto section_to_index = [](const char* sec) -> int {
         if (!sec) return 0;
         if (strcmp(sec, "search") == 0) return 1;
-        if (strcmp(sec, "downloads") == 0) return 2;
-        if (strcmp(sec, "privacy") == 0) return 3;
-        if (strcmp(sec, "developer") == 0) return 4;
-        if (strcmp(sec, "history") == 0) return 5;
-        if (strcmp(sec, "bookmarks") == 0) return 6;
-        if (strcmp(sec, "downloads_list") == 0) return 7;
-        if (strcmp(sec, "cookies") == 0) return 8;
-        if (strcmp(sec, "about") == 0) return 9;
+        if (strcmp(sec, "privacy") == 0) return 2;
+        if (strcmp(sec, "developer") == 0) return 3;
+        if (strcmp(sec, "history") == 0) return 4;
+        if (strcmp(sec, "bookmarks") == 0) return 5;
+        if (strcmp(sec, "cookies") == 0) return 6;
+        if (strcmp(sec, "about") == 0) return 7;
         return 0;
     };
 
@@ -3089,23 +2740,21 @@ void open_preferences_tab(const char* section_name) {
     preferences_page = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     g_object_set_data(G_OBJECT(preferences_page), "wb_page_type", (gpointer)"preferences");
 
-    // 左侧 Firefox 设置分类边栏（常规、搜索、文件与下载、隐私与安全、高级与开发者、关于）
+    // 左侧 Firefox 设置分类边栏（常规、搜索、隐私与安全、高级与开发者、历史记录、书签管理、Cookies、关于 WebBrowser）
     preferences_sidebar = gtk_list_box_new();
     gtk_widget_set_size_request(preferences_sidebar, 195, -1);
     gtk_style_context_add_class(gtk_widget_get_style_context(preferences_sidebar), "fx-sidebar");
     const char* cats[] = {
         tr_full("常规", "一般", "General"),
         tr_full("搜索", "搜尋", "Search"),
-        tr_full("文件与下载", "檔案與下載", "Files & Downloads"),
         tr_full("隐私与安全", "隱私與安全", "Privacy & Security"),
         tr_full("高级与开发者", "進階與開發者", "Advanced & Developer"),
         tr_full("历史记录", "歷史記錄", "History"),
         tr_full("书签管理", "書籤管理", "Bookmarks"),
-        tr_full("下载管理", "下載管理", "Downloads"),
         "Cookies",
         tr_full("关于 WebBrowser", "關於 WebBrowser", "About WebBrowser")
     };
-    for (int i = 0; i < 10; ++i) {
+    for (int i = 0; i < 8; ++i) {
         GtkWidget* r = gtk_list_box_row_new();
         GtkWidget* lbl = gtk_label_new(cats[i]);
         gtk_label_set_xalign(GTK_LABEL(lbl), 0.0f);
@@ -3294,76 +2943,7 @@ void open_preferences_tab(const char* section_name) {
     gtk_box_pack_start(GTK_BOX(srch_box), pref_srch_action_bar, FALSE, FALSE, 0);
     gtk_stack_add_named(GTK_STACK(preferences_stack), srch_box, "search");
 
-    // --- 分类 2: 文件与下载 ---
-    GtkWidget* dl_box_page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 14);
-    GtkWidget* dl_title = gtk_label_new(tr_full("文件与下载", "檔案與下載", "Files and Downloads"));
-    gtk_style_context_add_class(gtk_widget_get_style_context(dl_title), "fx-page-title");
-    gtk_label_set_xalign(GTK_LABEL(dl_title), 0.0f);
-    gtk_box_pack_start(GTK_BOX(dl_box_page), dl_title, FALSE, FALSE, 0);
-
-    GtkWidget* dl_card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
-    gtk_style_context_add_class(gtk_widget_get_style_context(dl_card), "fx-card");
-    GtkWidget* dl_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    GtkWidget* dl_lbl = gtk_label_new(tr_full("保存文件至", "儲存檔案至", "Save files to"));
-    pref_dl_entry = gtk_entry_new();
-    gtk_entry_set_text(GTK_ENTRY(pref_dl_entry), download_dir.c_str());
-    gtk_widget_set_hexpand(pref_dl_entry, TRUE);
-    GtkWidget* dl_browse = gtk_button_new_with_label(tr_full("浏览...", "瀏覽...", "Browse..."));
-    g_signal_connect(pref_dl_entry, "changed", G_CALLBACK(+[](GtkEditable*, gpointer) {
-        if (!pref_syncing_ui) update_pref_action_bars_visibility();
-    }), NULL);
-    g_signal_connect(dl_browse, "clicked", G_CALLBACK(+[](GtkWidget*, gpointer data) {
-        GtkEntry* entry = GTK_ENTRY(data);
-        GtkWidget* chooser = gtk_file_chooser_dialog_new(
-            tr_full("选择下载文件夹", "選擇下載資料夾", "Select download folder"),
-            GTK_WINDOW(main_window),
-            GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER,
-            tr_full("取消", "取消", "Cancel"), GTK_RESPONSE_CANCEL,
-            tr_full("选择", "選擇", "Select"), GTK_RESPONSE_ACCEPT,
-            NULL);
-        const gchar* cur = gtk_entry_get_text(entry);
-        if (cur && *cur) gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(chooser), cur);
-        if (gtk_dialog_run(GTK_DIALOG(chooser)) == GTK_RESPONSE_ACCEPT) {
-            gchar* folder = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(chooser));
-            if (folder) {
-                gtk_entry_set_text(entry, folder);
-                g_free(folder);
-            }
-        }
-        gtk_widget_destroy(chooser);
-    }), pref_dl_entry);
-    gtk_box_pack_start(GTK_BOX(dl_row), dl_lbl, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(dl_row), pref_dl_entry, TRUE, TRUE, 0);
-    gtk_box_pack_start(GTK_BOX(dl_row), dl_browse, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(dl_card), dl_row, FALSE, FALSE, 0);
-
-    GtkWidget* open_dl_mgr = gtk_button_new_with_label(tr_full("打开下载管理", "開啟下載管理", "Open Downloads Manager"));
-    gtk_widget_set_halign(open_dl_mgr, GTK_ALIGN_START);
-    g_signal_connect(open_dl_mgr, "clicked", G_CALLBACK(+[](GtkWidget*, gpointer) {
-        open_preferences_tab("downloads_list");
-    }), NULL);
-    gtk_box_pack_start(GTK_BOX(dl_card), open_dl_mgr, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(dl_box_page), dl_card, FALSE, FALSE, 0);
-
-    pref_dl_action_bar = create_pref_action_bar(G_CALLBACK(+[](GtkWidget*, gpointer) {
-        if (pref_dl_entry) {
-            std::string val = trim_whitespace(gtk_entry_get_text(GTK_ENTRY(pref_dl_entry)));
-            if (!val.empty()) {
-                download_dir = val;
-                ensure_dir_recursive(download_dir);
-                save_settings();
-            } else {
-                reset_all_pref_drafts();
-                return;
-            }
-        }
-        update_pref_action_bars_visibility();
-        update_status_text(tr_full("下载设置已应用", "下載設定已套用", "Download settings applied"), TRUE);
-    }));
-    gtk_box_pack_start(GTK_BOX(dl_box_page), pref_dl_action_bar, FALSE, FALSE, 0);
-    gtk_stack_add_named(GTK_STACK(preferences_stack), dl_box_page, "downloads");
-
-    // --- 分类 3: 隐私与安全（真正的 Cookie 策略、缓存清理、HTTPS 证书、自动播放权限、广告拦截） ---
+    // --- 分类 2: 隐私与安全 ---
     GtkWidget* priv_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 14);
     GtkWidget* priv_title = gtk_label_new(tr_full("隐私与安全", "隱私與安全", "Privacy & Security"));
     gtk_style_context_add_class(gtk_widget_get_style_context(priv_title), "fx-page-title");
@@ -3512,7 +3092,7 @@ void open_preferences_tab(const char* section_name) {
     gtk_box_pack_start(GTK_BOX(priv_box), pref_priv_action_bar, FALSE, FALSE, 0);
     gtk_stack_add_named(GTK_STACK(preferences_stack), priv_box, "privacy");
 
-    // --- 分类 4: 高级与开发者 ---
+    // --- 分类 3: 高级与开发者 ---
     GtkWidget* dev_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 14);
     GtkWidget* dev_title = gtk_label_new(tr_full("高级与开发者", "進階與開發者", "Advanced & Developer"));
     gtk_style_context_add_class(gtk_widget_get_style_context(dev_title), "fx-page-title");
@@ -3547,36 +3127,27 @@ void open_preferences_tab(const char* section_name) {
     gtk_box_pack_start(GTK_BOX(dev_box), pref_dev_action_bar, FALSE, FALSE, 0);
     gtk_stack_add_named(GTK_STACK(preferences_stack), dev_box, "developer");
 
-    // --- 分类 5: 历史记录 ---
+    // --- 分类 4: 历史记录 ---
     GtkWidget* scroll_hist = gtk_scrolled_window_new(NULL, NULL);
     gtk_widget_set_vexpand(scroll_hist, TRUE);
     history_store = gtk_list_store_new(5, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_BOOLEAN, G_TYPE_INT);
-    GtkWidget* tree_hist = create_record_tree(history_store, false);
+    GtkWidget* tree_hist = create_record_tree(history_store);
     g_object_unref(history_store);
     gtk_container_add(GTK_CONTAINER(scroll_hist), tree_hist);
     gtk_stack_add_named(GTK_STACK(preferences_stack), scroll_hist, "history");
     refresh_history_ui();
 
-    // --- 分类 6: 书签 ---
+    // --- 分类 5: 书签 ---
     GtkWidget* scroll_bm = gtk_scrolled_window_new(NULL, NULL);
     gtk_widget_set_vexpand(scroll_bm, TRUE);
     bookmark_store = gtk_list_store_new(5, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_BOOLEAN, G_TYPE_INT);
-    GtkWidget* tree_bm = create_record_tree(bookmark_store, false);
+    GtkWidget* tree_bm = create_record_tree(bookmark_store);
     g_object_unref(bookmark_store);
     gtk_container_add(GTK_CONTAINER(scroll_bm), tree_bm);
     gtk_stack_add_named(GTK_STACK(preferences_stack), scroll_bm, "bookmarks");
     refresh_bookmark_ui();
 
-    // --- 分类 7: 下载管理 ---
-    GtkWidget* scroll_dl_tab = gtk_scrolled_window_new(NULL, NULL);
-    gtk_widget_set_vexpand(scroll_dl_tab, TRUE);
-    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll_dl_tab), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
-    pref_dl_listbox = gtk_list_box_new();
-    gtk_list_box_set_selection_mode(GTK_LIST_BOX(pref_dl_listbox), GTK_SELECTION_NONE);
-    gtk_container_add(GTK_CONTAINER(scroll_dl_tab), pref_dl_listbox);
-    gtk_stack_add_named(GTK_STACK(preferences_stack), scroll_dl_tab, "downloads_list");
-
-    // --- 分类 8: Cookies ---
+    // --- 分类 6: Cookies ---
     GtkWidget* scroll_ck = gtk_scrolled_window_new(NULL, NULL);
     gtk_widget_set_vexpand(scroll_ck, TRUE);
     cookie_store = gtk_list_store_new(4, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_BOOLEAN, G_TYPE_INT);
@@ -3601,7 +3172,7 @@ void open_preferences_tab(const char* section_name) {
     gtk_stack_add_named(GTK_STACK(preferences_stack), scroll_ck, "cookies");
     refresh_cookies_from_manager();
 
-    // --- 分类 9: 关于 ---
+    // --- 分类 7: 关于 ---
     GtkWidget* about_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 14);
     GtkWidget* about_title = gtk_label_new(tr_full("关于 WebBrowser", "關於 WebBrowser", "About WebBrowser"));
     gtk_style_context_add_class(gtk_widget_get_style_context(about_title), "fx-page-title");
@@ -3657,23 +3228,18 @@ void open_preferences_tab(const char* section_name) {
         const char* name = nullptr;
         if (idx == 0) name = "general";
         else if (idx == 1) name = "search";
-        else if (idx == 2) name = "downloads";
-        else if (idx == 3) name = "privacy";
-        else if (idx == 4) name = "developer";
-        else if (idx == 5) name = "history";
-        else if (idx == 6) name = "bookmarks";
-        else if (idx == 7) name = "downloads_list";
-        else if (idx == 8) name = "cookies";
-        else if (idx == 9) name = "about";
+        else if (idx == 2) name = "privacy";
+        else if (idx == 3) name = "developer";
+        else if (idx == 4) name = "history";
+        else if (idx == 5) name = "bookmarks";
+        else if (idx == 6) name = "cookies";
+        else if (idx == 7) name = "about";
         if (name) {
             gtk_stack_set_visible_child_name(GTK_STACK(preferences_stack), name);
         }
-        const bool is_data = (idx >= 5 && idx <= 8);
+        const bool is_data = (idx >= 4 && idx <= 6);
         if (pref_data_toolbar) gtk_widget_set_visible(pref_data_toolbar, is_data);
         set_record_multi_mode(false);
-        if (idx == 7 && pref_dl_listbox) {
-            rebuild_download_list_ui(pref_dl_listbox, false);
-        }
         if (url_entry && GTK_IS_ENTRY(url_entry) && get_current_page_widget() == preferences_page) {
             gtk_entry_set_text(GTK_ENTRY(url_entry), get_current_preferences_url());
         }
@@ -3687,12 +3253,7 @@ void open_preferences_tab(const char* section_name) {
             g_object_unref(cookie_fetch_cancellable);
             cookie_fetch_cancellable = nullptr;
         }
-        if (active_download_listbox == pref_dl_listbox) {
-            clear_download_row_widgets();
-            active_download_listbox = nullptr;
-            active_download_multi_mode = false;
-        }
-        for (const auto& item : download_list) item->selected = false;
+
         preferences_page = nullptr;
         preferences_sidebar = nullptr;
         preferences_stack = nullptr;
@@ -3703,8 +3264,6 @@ void open_preferences_tab(const char* section_name) {
         pref_gen_action_bar = nullptr;
         pref_search_combo = nullptr;
         pref_srch_action_bar = nullptr;
-        pref_dl_entry = nullptr;
-        pref_dl_action_bar = nullptr;
         pref_cookie_combo = nullptr;
         pref_media_check = nullptr;
         pref_tls_check = nullptr;
@@ -3714,7 +3273,6 @@ void open_preferences_tab(const char* section_name) {
         pref_js_check = nullptr;
         pref_webgl_check = nullptr;
         pref_dev_action_bar = nullptr;
-        pref_dl_listbox = nullptr;
         adblock_status_lbl = nullptr;
         history_store = bookmark_store = cookie_store = nullptr;
         record_selection_columns.clear();
@@ -3751,14 +3309,15 @@ void on_main_window_destroy(GtkWidget*, gpointer) {
         g_object_unref(cookie_fetch_cancellable);
         cookie_fetch_cancellable = nullptr;
     }
-    for (const auto& item : download_list) {
+    auto dls = active_cli_downloads;
+    for (const auto& item : dls) {
         if (item->wk_download) {
             webkit_download_cancel(item->wk_download);
             g_object_unref(item->wk_download);
             item->wk_download = nullptr;
         }
     }
-    save_downloads();
+    active_cli_downloads.clear();
     gtk_main_quit();
 }
 
@@ -3778,7 +3337,6 @@ void build_ui(GtkWidget* window) {
     mkdir(base_dir.c_str(), 0777);
     mkdir((base_dir + "/history").c_str(), 0777);
     mkdir((base_dir + "/bookmarks").c_str(), 0777);
-    mkdir((base_dir + "/downloads").c_str(), 0777);
     mkdir((base_dir + "/adblock").c_str(), 0777);
     mkdir((base_dir + "/cookies").c_str(), 0777);
     mkdir((base_dir + "/cache").c_str(), 0777);
@@ -3788,7 +3346,6 @@ void build_ui(GtkWidget* window) {
     apply_app_theme();
     read_records(history_file, history_list);
     read_records(bookmark_file, bookmark_list);
-    load_downloads();
 
     data_manager = webkit_website_data_manager_new(
         "base-data-directory", base_dir.c_str(),
@@ -3869,7 +3426,7 @@ void build_ui(GtkWidget* window) {
     gtk_container_add(GTK_CONTAINER(tab_strip_scroll), tab_bar_box);
     gtk_box_pack_start(GTK_BOX(vbox), tab_strip_scroll, FALSE, FALSE, 0);
 
-    // 2. Firefox 风格导航栏：后退 前进 刷新/停止 | 地址栏 | 收藏 | 下载 | ☰ 菜单
+    // 2. Firefox 风格导航栏：后退 前进 刷新 | 地址栏 | 收藏 | 书签 | ☰ 菜单
     GtkWidget* toolbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     gtk_style_context_add_class(gtk_widget_get_style_context(toolbar), "nav-toolbar");
 
@@ -3907,17 +3464,6 @@ void build_ui(GtkWidget* window) {
     gtk_widget_set_can_focus(btn_bookmarks_menu, FALSE);
     gtk_style_context_add_class(gtk_widget_get_style_context(btn_bookmarks_menu), "flat");
 
-    btn_downloads = gtk_menu_button_new();
-    GtkWidget* dl_btn_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
-    gtk_box_pack_start(GTK_BOX(dl_btn_box), create_vector_icon(ICON_DOWNLOAD, 18), FALSE, FALSE, 0);
-    lbl_downloads_badge = gtk_label_new("");
-    gtk_widget_set_no_show_all(lbl_downloads_badge, TRUE);
-    gtk_box_pack_start(GTK_BOX(dl_btn_box), lbl_downloads_badge, FALSE, FALSE, 0);
-    gtk_container_add(GTK_CONTAINER(btn_downloads), dl_btn_box);
-    gtk_button_set_relief(GTK_BUTTON(btn_downloads), GTK_RELIEF_NONE);
-    gtk_widget_set_can_focus(btn_downloads, FALSE);
-    gtk_style_context_add_class(gtk_widget_get_style_context(btn_downloads), "flat");
-
     btn_menu = gtk_menu_button_new();
     gtk_container_add(GTK_CONTAINER(btn_menu), create_vector_icon(ICON_MENU, 18));
     gtk_button_set_relief(GTK_BUTTON(btn_menu), GTK_RELIEF_NONE);
@@ -3934,54 +3480,8 @@ void build_ui(GtkWidget* window) {
     gtk_box_pack_start(GTK_BOX(toolbar), url_entry, TRUE, TRUE, 4);
     gtk_box_pack_start(GTK_BOX(toolbar), btn_bookmark, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(toolbar), btn_bookmarks_menu, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(toolbar), btn_downloads, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(toolbar), btn_menu, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), toolbar, FALSE, FALSE, 0);
-
-    // 下载弹出面板（最近下载 + 打开下载管理）
-    dl_popover = gtk_popover_new(btn_downloads);
-    gtk_widget_set_size_request(dl_popover, 360, 320);
-    GtkWidget* dl_pop_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
-    gtk_container_set_border_width(GTK_CONTAINER(dl_pop_box), 10);
-    GtkWidget* dl_pop_header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
-    dl_popover_title = gtk_label_new(tr_full("最近下载", "最近下載", "Recent downloads"));
-    gtk_widget_set_halign(dl_popover_title, GTK_ALIGN_START);
-    dl_popover_manage_btn = gtk_button_new_with_label(tr_full("打开下载管理", "開啟下載管理", "Open Downloads Manager"));
-    gtk_widget_set_can_focus(dl_popover_manage_btn, FALSE);
-    gtk_box_pack_start(GTK_BOX(dl_pop_header), dl_popover_title, TRUE, TRUE, 0);
-    gtk_box_pack_end(GTK_BOX(dl_pop_header), dl_popover_manage_btn, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(dl_pop_box), dl_pop_header, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(dl_pop_box), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 0);
-
-    GtkWidget* dl_pop_scroll = gtk_scrolled_window_new(NULL, NULL);
-    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(dl_pop_scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
-    gtk_widget_set_vexpand(dl_pop_scroll, TRUE);
-    dl_popover_listbox = gtk_list_box_new();
-    gtk_list_box_set_selection_mode(GTK_LIST_BOX(dl_popover_listbox), GTK_SELECTION_NONE);
-    gtk_container_add(GTK_CONTAINER(dl_pop_scroll), dl_popover_listbox);
-    gtk_box_pack_start(GTK_BOX(dl_pop_box), dl_pop_scroll, TRUE, TRUE, 0);
-    gtk_widget_show_all(dl_pop_box);
-    gtk_container_add(GTK_CONTAINER(dl_popover), dl_pop_box);
-    gtk_menu_button_set_popover(GTK_MENU_BUTTON(btn_downloads), dl_popover);
-
-    g_signal_connect(dl_popover, "show", G_CALLBACK(+[](GtkWidget*, gpointer) {
-        if (dl_popover_listbox) rebuild_download_list_ui(dl_popover_listbox, false);
-    }), NULL);
-    g_signal_connect(dl_popover, "hide", G_CALLBACK(+[](GtkWidget*, gpointer) {
-        if (active_download_listbox == dl_popover_listbox) {
-            if (preferences_page && pref_dl_listbox && pref_current_row == 7) {
-                rebuild_download_list_ui(pref_dl_listbox, record_multi_mode);
-            } else {
-                clear_download_row_widgets();
-                active_download_listbox = nullptr;
-                active_download_multi_mode = false;
-            }
-        }
-    }), NULL);
-    g_signal_connect(dl_popover_manage_btn, "clicked", G_CALLBACK(+[](GtkWidget*, gpointer) {
-        if (dl_popover) gtk_widget_hide(dl_popover);
-        open_preferences_tab("downloads_list");
-    }), NULL);
 
     // 书签弹出面板
     bm_popover = gtk_popover_new(btn_bookmarks_menu);
@@ -4016,8 +3516,6 @@ void build_ui(GtkWidget* window) {
         open_preferences_tab("bookmarks");
     }), NULL);
 
-
-
     // Firefox 汉堡菜单弹出面板
     menu_popover = gtk_popover_new(btn_menu);
     GtkWidget* menu_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
@@ -4025,13 +3523,11 @@ void build_ui(GtkWidget* window) {
 
     menu_history_btn = create_menu_item_button(tr_full("历史记录", "歷史記錄", "History"));
     menu_bookmark_btn = create_menu_item_button(tr_full("书签管理", "書籤管理", "Bookmarks"));
-    menu_downloads_btn = create_menu_item_button(tr_full("下载管理", "下載管理", "Downloads"));
     menu_cookies_btn = create_menu_item_button("Cookies");
     menu_settings_btn = create_menu_item_button(tr_full("设置", "設定", "Settings"));
 
     gtk_box_pack_start(GTK_BOX(menu_box), menu_history_btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(menu_box), menu_bookmark_btn, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(menu_box), menu_downloads_btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(menu_box), menu_cookies_btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(menu_box), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 4);
     gtk_box_pack_start(GTK_BOX(menu_box), menu_settings_btn, FALSE, FALSE, 0);
@@ -4040,15 +3536,11 @@ void build_ui(GtkWidget* window) {
     gtk_container_add(GTK_CONTAINER(menu_popover), menu_box);
     gtk_menu_button_set_popover(GTK_MENU_BUTTON(btn_menu), menu_popover);
 
-
     g_signal_connect(menu_history_btn, "clicked", G_CALLBACK(+[](GtkWidget*, gpointer) {
         open_preferences_tab("history");
     }), NULL);
     g_signal_connect(menu_bookmark_btn, "clicked", G_CALLBACK(+[](GtkWidget*, gpointer) {
         open_preferences_tab("bookmarks");
-    }), NULL);
-    g_signal_connect(menu_downloads_btn, "clicked", G_CALLBACK(+[](GtkWidget*, gpointer) {
-        open_preferences_tab("downloads_list");
     }), NULL);
     g_signal_connect(menu_cookies_btn, "clicked", G_CALLBACK(+[](GtkWidget*, gpointer) {
         open_preferences_tab("cookies");
@@ -4098,7 +3590,6 @@ void build_ui(GtkWidget* window) {
     g_signal_connect(window, "size-allocate", G_CALLBACK(on_window_size_allocate), NULL);
 
     apply_ui_language();
-    update_download_button_badge();
     add_tab(get_home_url().c_str());
 }
 
