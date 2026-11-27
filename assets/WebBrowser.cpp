@@ -45,7 +45,11 @@ static gboolean on_vector_icon_draw(GtkWidget* widget, cairo_t* cr, gpointer) {
 
     GtkStyleContext* ctx = gtk_widget_get_style_context(widget);
     GdkRGBA fg;
-    gtk_style_context_get_color(ctx, gtk_widget_get_state_flags(widget), &fg);
+    GtkStateFlags flags = gtk_widget_get_state_flags(widget);
+    gtk_style_context_get_color(ctx, flags, &fg);
+    if (!gtk_widget_is_sensitive(widget) || (flags & GTK_STATE_FLAG_INSENSITIVE)) {
+        fg.alpha *= 0.28;
+    }
 
     cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
     cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
@@ -958,7 +962,9 @@ void apply_app_theme() {
         "button:active { background-color: #d0d0d8; }"
         "button:focus { outline-style: none; }"
         "button.flat { background-color: transparent; border-color: transparent; }"
+        "button:disabled { color: #9b9ba8; }"
         "button.flat:hover { background-color: #e0e0e6; }"
+        "button.flat:disabled { color: #9b9ba8; background-color: transparent; }"
         ".tab-strip { background-color: #f0f0f4; padding: 5px 8px; border-bottom: 1px solid #d7d7de; }"
         ".tab-pill { background-color: transparent; border-radius: 7px; padding: 2px 4px; }"
         ".tab-pill:hover { background-color: #e3e3ea; }"
@@ -978,7 +984,13 @@ void apply_app_theme() {
         "checkbutton, radiobutton, label { color: #15141a; }"
         "frame { border-color: #dcdce4; }"
         "scrolledwindow { background-color: #f9f9fb; }"
-        "scale trough { background-color: #d7d7de; }";
+        "scale trough { background-color: #d7d7de; }"
+        "menu { background-color: #ffffff; color: #15141a; border: 1px solid #cfcfd8; padding: 4px; }"
+        "menu menuitem { padding: 6px 12px; border-radius: 4px; color: #15141a; background-color: transparent; }"
+        "menu menuitem:hover { background-image: none; background-color: #e0ecff; color: #0060df; }"
+        "menu menuitem:hover label { color: #0060df; }"
+        "menu menuitem:disabled, menu menuitem:disabled label { color: #9b9ba8; }"
+        "menu separator { background-color: #e0e0e6; min-height: 1px; margin: 4px 6px; }";
     const char* css_dark =
         "window, popover { background-color: #1c1b22; color: #fbfbfe; }"
         "button { background-image: none; background-color: #2b2a33; color: #fbfbfe; border: 1px solid #42414d; border-radius: 6px; padding: 5px 10px; }"
@@ -986,7 +998,9 @@ void apply_app_theme() {
         "button:active { background-color: #4a4957; }"
         "button:focus { outline-style: none; }"
         "button.flat { background-color: transparent; border-color: transparent; }"
+        "button:disabled { color: #6e6d7a; }"
         "button.flat:hover { background-color: #383742; }"
+        "button.flat:disabled { color: #6e6d7a; background-color: transparent; }"
         ".tab-strip { background-color: #1c1b22; padding: 5px 8px; border-bottom: 1px solid #2b2a33; }"
         ".tab-pill { background-color: transparent; border-radius: 7px; padding: 2px 4px; }"
         ".tab-pill:hover { background-color: #2c2b35; }"
@@ -1006,7 +1020,13 @@ void apply_app_theme() {
         "checkbutton, radiobutton, label { color: #fbfbfe; }"
         "frame { border-color: #383745; }"
         "scrolledwindow { background-color: #1c1b22; }"
-        "scale trough { background-color: #3a3944; }";
+        "scale trough { background-color: #3a3944; }"
+        "menu { background-color: #2b2a33; color: #fbfbfe; border: 1px solid #42414d; padding: 4px; }"
+        "menu menuitem { padding: 6px 12px; border-radius: 4px; color: #fbfbfe; background-color: transparent; }"
+        "menu menuitem:hover { background-image: none; background-color: #0060df; color: #ffffff; }"
+        "menu menuitem:hover label { color: #ffffff; }"
+        "menu menuitem:disabled, menu menuitem:disabled label { color: #6e6d7a; }"
+        "menu separator { background-color: #42414d; min-height: 1px; margin: 4px 6px; }";
     gtk_css_provider_load_from_data(app_css, ui_theme == "dark" ? css_dark : css_light, -1, NULL);
     GdkScreen* screen = gdk_screen_get_default();
     if (screen && !app_css_installed) {
@@ -1038,8 +1058,14 @@ void update_navigation_state() {
     const char* ptype = get_page_type(cur_page);
 
     if (strcmp(ptype, "preferences") == 0) {
-        if (btn_back) gtk_widget_set_sensitive(btn_back, !pref_back_stack.empty());
-        if (btn_forward) gtk_widget_set_sensitive(btn_forward, !pref_forward_stack.empty());
+        if (btn_back) {
+            gtk_widget_set_sensitive(btn_back, !pref_back_stack.empty());
+            gtk_widget_queue_draw(btn_back);
+        }
+        if (btn_forward) {
+            gtk_widget_set_sensitive(btn_forward, !pref_forward_stack.empty());
+            gtk_widget_queue_draw(btn_forward);
+        }
         const bool is_data_subpage = (pref_current_row >= 5 && pref_current_row <= 8);
         if (btn_refresh) {
             if (is_data_subpage) {
@@ -1059,8 +1085,14 @@ void update_navigation_state() {
     if (!wv) return;
 
     WebKitWebView* webview = WEBKIT_WEB_VIEW(wv);
-    if (btn_back) gtk_widget_set_sensitive(btn_back, webkit_web_view_can_go_back(webview));
-    if (btn_forward) gtk_widget_set_sensitive(btn_forward, webkit_web_view_can_go_forward(webview));
+    if (btn_back) {
+        gtk_widget_set_sensitive(btn_back, webkit_web_view_can_go_back(webview));
+        gtk_widget_queue_draw(btn_back);
+    }
+    if (btn_forward) {
+        gtk_widget_set_sensitive(btn_forward, webkit_web_view_can_go_forward(webview));
+        gtk_widget_queue_draw(btn_forward);
+    }
     if (btn_refresh) {
         gtk_widget_show(btn_refresh);
         gtk_widget_set_sensitive(btn_refresh, TRUE);
@@ -2624,7 +2656,14 @@ gboolean on_webview_context_menu(WebKitWebView* view, WebKitContextMenu*,
         GdkEvent* event, WebKitHitTestResult* hit_test_result, gpointer) {
     if (!view || !WEBKIT_IS_WEB_VIEW(view)) return TRUE;
     GtkWidget* menu = gtk_menu_new();
-    g_signal_connect(menu, "selection-done", G_CALLBACK(gtk_widget_destroy), NULL);
+    gtk_menu_attach_to_widget(GTK_MENU(menu), GTK_WIDGET(view), NULL);
+    g_signal_connect(menu, "selection-done", G_CALLBACK(+[](GtkWidget* m, gpointer) {
+        g_idle_add(+[](gpointer data) -> gboolean {
+            GtkWidget* w = GTK_WIDGET(data);
+            if (w && GTK_IS_WIDGET(w)) gtk_widget_destroy(w);
+            return G_SOURCE_REMOVE;
+        }, m);
+    }), NULL);
     populate_unified_context_menu(GTK_MENU_SHELL(menu), nullptr, view, hit_test_result);
     gtk_widget_show_all(menu);
     gtk_menu_popup_at_pointer(GTK_MENU(menu), event);
@@ -2781,6 +2820,12 @@ void add_tab(const char* url) {
     g_signal_connect(webview, "notify::title", G_CALLBACK(+[](GtkWidget*, GParamSpec*, gpointer){
         sync_tab_bar();
     }), NULL);
+    WebKitBackForwardList* bf_list = webkit_web_view_get_back_forward_list(WEBKIT_WEB_VIEW(webview));
+    if (bf_list) {
+        g_signal_connect(bf_list, "changed", G_CALLBACK(+[](WebKitBackForwardList*, WebKitBackForwardListItem*, GList*, gpointer) {
+            update_navigation_state();
+        }), NULL);
+    }
     g_signal_connect(webview, "notify::favicon", G_CALLBACK(+[](GtkWidget*, GParamSpec*, gpointer){
         sync_tab_bar();
     }), NULL);
