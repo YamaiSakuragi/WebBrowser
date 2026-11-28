@@ -402,6 +402,12 @@ static GtkWidget* bm_popover_title = nullptr;
 static GtkWidget* bm_popover_manage_btn = nullptr;
 static GtkWidget* btn_bookmarks_menu = nullptr;
 
+static GtkWidget* hist_popover = nullptr;
+static GtkWidget* hist_popover_listbox = nullptr;
+static GtkWidget* hist_popover_title = nullptr;
+static GtkWidget* hist_popover_manage_btn = nullptr;
+static GtkWidget* btn_history_menu = nullptr;
+
 static GtkWidget* record_multi_button = nullptr;
 static GtkWidget* record_select_all_button = nullptr;
 static GtkWidget* record_invert_button = nullptr;
@@ -430,24 +436,12 @@ static GtkWidget* btn_refresh = nullptr;
 static GtkWidget* icon_refresh = nullptr;
 static GtkWidget* btn_bookmark = nullptr;
 static GtkWidget* icon_bookmark = nullptr;
-static GtkWidget* btn_menu = nullptr;
-static GtkWidget* menu_popover = nullptr;
-
-static GtkWidget* menu_history_btn = nullptr;
-static GtkWidget* menu_bookmark_btn = nullptr;
-static GtkWidget* menu_cookies_btn = nullptr;
-static GtkWidget* menu_settings_btn = nullptr;
+static GtkWidget* btn_settings = nullptr;
 static bool javascript_enabled = true;
 static bool webgl_enabled = true;
 static bool media_requires_gesture = true;
 static double page_zoom_percent = 50.0;
 static bool zoom_setting_version_seen = false;
-
-struct WebProcessCrashState {
-    std::string last_uri;
-    gint64 last_time_us = 0;
-    int count = 0;
-};
 
 // 语言翻译辅助函数支持 zh, zh-TW, en
 const char* tr_full(const char* zh, const char* zh_tw, const char* en) {
@@ -957,7 +951,7 @@ void update_navigation_state() {
             gtk_widget_set_sensitive(btn_forward, !pref_forward_stack.empty());
             gtk_widget_queue_draw(btn_forward);
         }
-        const bool is_data_subpage = (pref_current_row >= 4 && pref_current_row <= 6);
+        const bool is_data_subpage = (pref_current_row == 4 || pref_current_row == 5);
         if (btn_refresh) {
             if (is_data_subpage) {
                 gtk_widget_show(btn_refresh);
@@ -1011,14 +1005,13 @@ void apply_ui_language() {
     if (btn_back) gtk_widget_set_tooltip_text(btn_back, tr_full("后退", "後退", "Back"));
     if (btn_forward) gtk_widget_set_tooltip_text(btn_forward, tr_full("前进", "前進", "Forward"));
     if (btn_bookmarks_menu) gtk_widget_set_tooltip_text(btn_bookmarks_menu, tr_full("书签", "書籤", "Bookmarks"));
-    if (btn_menu) gtk_widget_set_tooltip_text(btn_menu, tr_full("打开应用菜单", "開啟應用選單", "Open application menu"));
+    if (btn_history_menu) gtk_widget_set_tooltip_text(btn_history_menu, tr_full("历史记录", "歷史記錄", "History"));
+    if (btn_settings) gtk_widget_set_tooltip_text(btn_settings, tr_full("设置", "設定", "Settings"));
     if (url_entry) gtk_entry_set_placeholder_text(GTK_ENTRY(url_entry), tr_full("搜索或输入网址", "搜尋或輸入網址", "Search or enter address"));
     if (bm_popover_title) gtk_label_set_text(GTK_LABEL(bm_popover_title), tr_full("书签", "書籤", "Bookmarks"));
     if (bm_popover_manage_btn) gtk_button_set_label(GTK_BUTTON(bm_popover_manage_btn), tr_full("打开书签管理", "開啟書籤管理", "Open Bookmarks Manager"));
-    if (menu_history_btn) gtk_button_set_label(GTK_BUTTON(menu_history_btn), tr_full("历史记录", "歷史記錄", "History"));
-    if (menu_bookmark_btn) gtk_button_set_label(GTK_BUTTON(menu_bookmark_btn), tr_full("书签管理", "書籤管理", "Bookmarks"));
-    if (menu_cookies_btn) gtk_button_set_label(GTK_BUTTON(menu_cookies_btn), "Cookies");
-    if (menu_settings_btn) gtk_button_set_label(GTK_BUTTON(menu_settings_btn), tr_full("设置", "設定", "Settings"));
+    if (hist_popover_title) gtk_label_set_text(GTK_LABEL(hist_popover_title), tr_full("历史记录", "歷史記錄", "History"));
+    if (hist_popover_manage_btn) gtk_button_set_label(GTK_BUTTON(hist_popover_manage_btn), tr_full("打开历史管理", "開啟歷史管理", "Open History Manager"));
 
     if (main_window) gtk_window_set_title(GTK_WINDOW(main_window), "WebBrowser");
     if (web_context) {
@@ -1318,6 +1311,71 @@ void rebuild_bookmark_popover_ui() {
     }
 }
 
+void rebuild_history_popover_ui() {
+    if (!hist_popover_listbox || !GTK_IS_LIST_BOX(hist_popover_listbox)) return;
+    GList* children = gtk_container_get_children(GTK_CONTAINER(hist_popover_listbox));
+    for (GList* l = children; l != nullptr; l = l->next) {
+        gtk_widget_destroy(GTK_WIDGET(l->data));
+    }
+    g_list_free(children);
+
+    if (history_list.empty()) {
+        GtkWidget* empty_row = gtk_list_box_row_new();
+        gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(empty_row), FALSE);
+        gtk_list_box_row_set_selectable(GTK_LIST_BOX_ROW(empty_row), FALSE);
+        GtkWidget* lbl = gtk_label_new(tr_full("暂无历史记录", "暫無歷史記錄", "No history yet"));
+        gtk_container_set_border_width(GTK_CONTAINER(lbl), 18);
+        gtk_container_add(GTK_CONTAINER(empty_row), lbl);
+        gtk_widget_show_all(empty_row);
+        gtk_list_box_insert(GTK_LIST_BOX(hist_popover_listbox), empty_row, -1);
+        return;
+    }
+
+    int count = 0;
+    for (int i = (int)history_list.size() - 1; i >= 0 && count < 100; --i, ++count) {
+        const auto& item = history_list[i];
+        GtkWidget* row = gtk_list_box_row_new();
+        gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), FALSE);
+        gtk_list_box_row_set_selectable(GTK_LIST_BOX_ROW(row), FALSE);
+
+        GtkWidget* btn = gtk_button_new();
+        gtk_button_set_relief(GTK_BUTTON(btn), GTK_RELIEF_NONE);
+        gtk_widget_set_can_focus(btn, FALSE);
+        gtk_style_context_add_class(gtk_widget_get_style_context(btn), "flat");
+        gtk_widget_set_tooltip_text(btn, item.url.c_str());
+
+        GtkWidget* hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        gtk_box_pack_start(GTK_BOX(hbox), create_vector_icon(ICON_HISTORY, 14), FALSE, FALSE, 0);
+        std::string label_text = item.title.empty() ? item.url : item.title;
+        GtkWidget* lbl = gtk_label_new(label_text.c_str());
+        gtk_label_set_xalign(GTK_LABEL(lbl), 0.0f);
+        gtk_label_set_ellipsize(GTK_LABEL(lbl), PANGO_ELLIPSIZE_END);
+        gtk_label_set_max_width_chars(GTK_LABEL(lbl), 32);
+        gtk_box_pack_start(GTK_BOX(hbox), lbl, TRUE, TRUE, 0);
+        gtk_container_add(GTK_CONTAINER(btn), hbox);
+
+        std::string* url_copy = new std::string(item.url);
+        g_signal_connect_data(btn, "clicked", G_CALLBACK(+[](GtkWidget*, gpointer data) {
+            std::string* u = static_cast<std::string*>(data);
+            if (hist_popover) gtk_widget_hide(hist_popover);
+            if (u && !u->empty()) {
+                GtkWidget* cur_wv = get_current_webview();
+                if (cur_wv) {
+                    webkit_web_view_load_uri(WEBKIT_WEB_VIEW(cur_wv), u->c_str());
+                } else {
+                    add_tab(u->c_str());
+                }
+            }
+        }), url_copy, +[](gpointer data, GClosure*) {
+            delete static_cast<std::string*>(data);
+        }, (GConnectFlags)0);
+
+        gtk_container_add(GTK_CONTAINER(row), btn);
+        gtk_widget_show_all(row);
+        gtk_list_box_insert(GTK_LIST_BOX(hist_popover_listbox), row, -1);
+    }
+}
+
 int record_selected_column(GtkTreeModel* model) {
     const int count = gtk_tree_model_get_n_columns(model);
     if (count == 4) return 2; // Cookies
@@ -1417,11 +1475,10 @@ GtkWidget* create_record_tree(GtkListStore* store) {
 
 void set_record_multi_mode(bool enabled) {
     record_multi_mode = enabled;
-    const bool is_cookies = (pref_current_row == 6);
     if (record_multi_button) gtk_button_set_label(GTK_BUTTON(record_multi_button), enabled ? tr_full("退出多选", "退出多選", "Exit selection") : tr_full("多选", "多選", "Select"));
     if (record_select_all_button) gtk_widget_set_visible(record_select_all_button, enabled);
     if (record_invert_button) gtk_widget_set_visible(record_invert_button, enabled);
-    if (record_delete_button) gtk_widget_set_visible(record_delete_button, enabled && !is_cookies);
+    if (record_delete_button) gtk_widget_set_visible(record_delete_button, enabled);
     if (record_copy_button) gtk_widget_set_visible(record_copy_button, enabled);
     for (GtkTreeViewColumn* column : record_selection_columns)
         gtk_tree_view_column_set_visible(column, enabled);
@@ -1430,7 +1487,6 @@ void set_record_multi_mode(bool enabled) {
 GtkListStore* current_pref_data_store() {
     if (pref_current_row == 4) return history_store;
     if (pref_current_row == 5) return bookmark_store;
-    if (pref_current_row == 6) return cookie_store;
     return nullptr;
 }
 
@@ -1477,9 +1533,6 @@ void on_record_copy_selected(GtkWidget*, gpointer) {
                 if (pref_current_row == 4 || pref_current_row == 5) {
                     gtk_tree_model_get(GTK_TREE_MODEL(store), &iter, REC_TEXT, &a, REC_URL, &b, REC_TIME, &c, -1);
                     copied += (a ? a : "") + std::string("\t") + (b ? b : "") + "\t" + (c ? c : "") + "\n";
-                } else if (pref_current_row == 6) {
-                    gtk_tree_model_get(GTK_TREE_MODEL(store), &iter, 0, &a, 1, &b, -1);
-                    copied += std::string(a ? a : "") + "\t" + (b ? b : "") + "\n";
                 } else {
                     gtk_tree_model_get(GTK_TREE_MODEL(store), &iter, 0, &a, -1);
                     copied += std::string(a ? a : "") + "\n";
@@ -1499,7 +1552,6 @@ void on_record_copy_selected(GtkWidget*, gpointer) {
 }
 
 void on_record_delete_selected(GtkWidget*, gpointer) {
-    if (pref_current_row == 6) return;
     GtkListStore* store = current_pref_data_store();
     if (!store) return;
     std::vector<int> indices;
@@ -1543,7 +1595,7 @@ void on_cookies_fetched(GObject* source_object, GAsyncResult* res, gpointer user
             const gchar* name = soup_cookie_get_name(cookie);
             GtkTreeIter iter;
             gtk_list_store_append(cookie_store, &iter);
-            gtk_list_store_set(cookie_store, &iter, 0, domain ? domain : "", 1, name ? name : "", 2, FALSE, 3, gtk_tree_model_iter_n_children(GTK_TREE_MODEL(cookie_store), NULL), -1);
+            gtk_list_store_set(cookie_store, &iter, 0, domain ? domain : "", 1, name ? name : "", -1);
         }
         g_list_free_full(cookies, (GDestroyNotify)soup_cookie_free);
     }
@@ -1593,7 +1645,7 @@ void apply_page_zoom(GtkWidget* view);
 const char* get_current_preferences_url() {
     if (pref_current_row == 4) return "about:history";
     if (pref_current_row == 5) return "about:bookmarks";
-    if (pref_current_row == 6) return "about:cookies";
+    if (pref_current_row == 6) return "about:about";
     return "about:preferences";
 }
 
@@ -2100,60 +2152,6 @@ gboolean on_load_failed(WebKitWebView* web_view, WebKitLoadEvent load_event, con
     return TRUE;
 }
 
-void on_web_process_terminated(WebKitWebView* web_view, WebKitWebProcessTerminationReason reason, gpointer user_data) {
-    if (!web_view || reason == WEBKIT_WEB_PROCESS_TERMINATED_BY_API) return;
-    const gchar* uri = webkit_web_view_get_uri(web_view);
-    if (!uri || !*uri) return;
-
-    auto* state = static_cast<WebProcessCrashState*>(g_object_get_data(G_OBJECT(web_view), "wb_crash_state"));
-    if (!state) {
-        state = new WebProcessCrashState();
-        g_object_set_data_full(G_OBJECT(web_view), "wb_crash_state", state, [](gpointer p) {
-            delete static_cast<WebProcessCrashState*>(p);
-        });
-    }
-
-    const gint64 now_us = g_get_monotonic_time();
-    if (state->last_uri == uri && (now_us - state->last_time_us) < 30 * G_USEC_PER_SEC) {
-        state->count++;
-    } else {
-        state->last_uri = uri;
-        state->count = 1;
-    }
-    state->last_time_us = now_us;
-
-    if (state->count <= 1) {
-        webkit_web_view_load_uri(web_view, uri);
-        return;
-    }
-
-    if (GTK_WIDGET(web_view) == get_current_webview()) {
-        if (progress_bar) gtk_widget_hide(progress_bar);
-        update_status_text(tr_full("页面渲染异常", "頁面算繪異常", "Page process crashed"), FALSE);
-    }
-    const bool dark = ui_theme == "dark";
-    const std::string bg = dark ? "#1c1b22" : "#f9f9fb";
-    const std::string card = dark ? "#23222b" : "#ffffff";
-    const std::string border = dark ? "#383745" : "#e0e0e6";
-    const std::string fg = dark ? "#fbfbfe" : "#15141a";
-    const std::string muted = dark ? "#cfcfd8" : "#5b5b66";
-    const std::string escaped_uri = html_escape(uri);
-    std::string html =
-        "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-        "<title>" + std::string(tr_full("页面崩溃", "頁面崩潰", "Page crashed")) + "</title><style>"
-        "body{margin:0;padding:36px 24px;font-family:Arial,'Noto Sans CJK SC',sans-serif;background:" + bg + ";color:" + fg + ";}"
-        ".wrap{max-width:680px;margin:40px auto;background:" + card + ";border:1px solid " + border + ";border-radius:12px;padding:28px;}"
-        "h1{margin:0 0 12px;font-size:24px;}p{color:" + muted + ";line-height:1.7;margin:0 0 18px;overflow-wrap:anywhere;}"
-        "button{background:#0060df;color:#ffffff;border:0;border-radius:6px;padding:10px 18px;font-size:14px;cursor:pointer;}"
-        "</style></head><body><div class='wrap'>"
-        "<h1>" + std::string(tr_full("页面渲染进程已停止", "頁面算繪程序已停止", "The page process stopped")) + "</h1>"
-        "<p>" + std::string(tr_full("为避免无限刷新循环，浏览器已暂停自动重新加载此页面。", "為避免無限重新整理循環，瀏覽器已暫停自動重新載入此頁面。", "To avoid an infinite reload loop, automatic reloading has been paused for this page.")) + "</p>"
-        "<p>" + escaped_uri + "</p>"
-        "<button onclick=\"location.href='" + escaped_uri + "'\">" + std::string(tr_full("手动重新加载", "手動重新載入", "Reload manually")) + "</button>"
-        "</div></body></html>";
-    webkit_web_view_load_alternate_html(web_view, html.c_str(), uri, NULL);
-}
-
 void on_url_activate(GtkWidget* widget, gpointer data) {
     if (!url_entry || !GTK_IS_ENTRY(url_entry)) return;
     std::string raw = trim_whitespace(gtk_entry_get_text(GTK_ENTRY(url_entry)));
@@ -2376,8 +2374,7 @@ void sync_tab_bar() {
         if (is_pref) {
             if (pref_current_row == 4) display_title = tr_full("历史记录", "歷史記錄", "History");
             else if (pref_current_row == 5) display_title = tr_full("书签管理", "書籤管理", "Bookmarks");
-            else if (pref_current_row == 6) display_title = "Cookies";
-            else if (pref_current_row == 7) display_title = tr_full("关于 WebBrowser", "關於 WebBrowser", "About WebBrowser");
+            else if (pref_current_row == 6) display_title = tr_full("关于 WebBrowser", "關於 WebBrowser", "About WebBrowser");
             else display_title = tr_full("设置", "設定", "Settings");
         } else {
             GtkWidget* wv = get_webview_from_page(page);
@@ -2395,7 +2392,7 @@ void sync_tab_bar() {
         gtk_style_context_add_class(gtk_widget_get_style_context(tab_btn), "flat");
         GtkWidget* tab_inner = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
         if (is_pref) {
-            if (pref_current_row == 7) {
+            if (pref_current_row == 6) {
                 GdkPixbuf* logo_pb = gdk_pixbuf_new_from_file_at_scale(app_icon_path.c_str(), 14, 14, TRUE, NULL);
                 if (logo_pb) {
                     GtkWidget* logo_img = gtk_image_new_from_pixbuf(logo_pb);
@@ -2410,7 +2407,6 @@ void sync_tab_bar() {
                 IconType picon = ICON_SETTINGS;
                 if (pref_current_row == 4) picon = ICON_HISTORY;
                 else if (pref_current_row == 5) picon = ICON_BOOKMARKS;
-                else if (pref_current_row == 6) picon = ICON_COOKIE;
                 gtk_box_pack_start(GTK_BOX(tab_inner), create_vector_icon(picon, 14), FALSE, FALSE, 0);
             }
         } else {
@@ -2483,7 +2479,6 @@ void add_tab(const char* url) {
 
     g_signal_connect(webview, "load-changed", G_CALLBACK(on_load_changed), NULL);
     g_signal_connect(webview, "load-failed", G_CALLBACK(on_load_failed), NULL);
-    g_signal_connect(webview, "web-process-terminated", G_CALLBACK(on_web_process_terminated), NULL);
     g_signal_connect(webview, "notify::estimated-load-progress", G_CALLBACK(on_progress_changed), NULL);
     g_signal_connect(webview, "notify::is-loading", G_CALLBACK(on_is_loading_changed), NULL);
     g_signal_connect(webview, "decide-policy", G_CALLBACK(on_decide_policy), NULL);
@@ -2704,7 +2699,6 @@ void on_refresh(GtkWidget* w, gpointer d) {
 
 // Firefox 风格内嵌设置子页面 (about:preferences)
 void open_preferences_tab(const char* section_name) {
-    if (menu_popover) gtk_widget_hide(menu_popover);
     if (!notebook || !GTK_IS_NOTEBOOK(notebook)) return;
 
     auto section_to_index = [](const char* sec) -> int {
@@ -2712,10 +2706,10 @@ void open_preferences_tab(const char* section_name) {
         if (strcmp(sec, "search") == 0) return 1;
         if (strcmp(sec, "privacy") == 0) return 2;
         if (strcmp(sec, "developer") == 0) return 3;
+        if (strcmp(sec, "cookies") == 0) return 2;
         if (strcmp(sec, "history") == 0) return 4;
         if (strcmp(sec, "bookmarks") == 0) return 5;
-        if (strcmp(sec, "cookies") == 0) return 6;
-        if (strcmp(sec, "about") == 0) return 7;
+        if (strcmp(sec, "about") == 0) return 6;
         return 0;
     };
 
@@ -2751,10 +2745,9 @@ void open_preferences_tab(const char* section_name) {
         tr_full("高级与开发者", "進階與開發者", "Advanced & Developer"),
         tr_full("历史记录", "歷史記錄", "History"),
         tr_full("书签管理", "書籤管理", "Bookmarks"),
-        "Cookies",
         tr_full("关于 WebBrowser", "關於 WebBrowser", "About WebBrowser")
     };
-    for (int i = 0; i < 8; ++i) {
+    for (int i = 0; i < 7; ++i) {
         GtkWidget* r = gtk_list_box_row_new();
         GtkWidget* lbl = gtk_label_new(cats[i]);
         gtk_label_set_xalign(GTK_LABEL(lbl), 0.0f);
@@ -2973,10 +2966,11 @@ void open_preferences_tab(const char* section_name) {
     gtk_box_pack_start(GTK_BOX(cookie_card), cookie_row, FALSE, FALSE, 0);
 
     GtkWidget* data_btns = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    GtkWidget* open_cookies_btn = gtk_button_new_with_label(tr_full("查看 Cookies...", "檢視 Cookies...", "View Cookies..."));
+    GtkWidget* refresh_cookies_btn = gtk_button_new_with_label(tr_full("刷新 Cookies", "重新整理 Cookies", "Refresh Cookies"));
     GtkWidget* clear_cache_btn = gtk_button_new_with_label(tr_full("清除网页缓存", "清除網頁快取", "Clear web cache"));
-    g_signal_connect(open_cookies_btn, "clicked", G_CALLBACK(+[](GtkWidget*, gpointer) {
-        open_preferences_tab("cookies");
+    g_signal_connect(refresh_cookies_btn, "clicked", G_CALLBACK(+[](GtkWidget*, gpointer) {
+        refresh_cookies_from_manager();
+        update_status_text(tr_full("已刷新 Cookies 列表", "已重新整理 Cookies 列表", "Cookies refreshed"), TRUE);
     }), NULL);
     g_signal_connect(clear_cache_btn, "clicked", G_CALLBACK(+[](GtkWidget*, gpointer) {
         if (data_manager) {
@@ -2987,9 +2981,29 @@ void open_preferences_tab(const char* section_name) {
             update_status_text(tr_full("已清除网页缓存", "已清除網頁快取", "Web cache cleared"), TRUE);
         }
     }), NULL);
-    gtk_box_pack_start(GTK_BOX(data_btns), open_cookies_btn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(data_btns), refresh_cookies_btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(data_btns), clear_cache_btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(cookie_card), data_btns, FALSE, FALSE, 0);
+
+    GtkWidget* scroll_ck = gtk_scrolled_window_new(NULL, NULL);
+    gtk_widget_set_size_request(scroll_ck, -1, 180);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll_ck), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    cookie_store = gtk_list_store_new(2, G_TYPE_STRING, G_TYPE_STRING);
+    GtkWidget* tree_ck = gtk_tree_view_new_with_model(GTK_TREE_MODEL(cookie_store));
+    g_object_unref(cookie_store);
+    GtkCellRenderer* cr = gtk_cell_renderer_text_new();
+    g_object_set(cr, "ellipsize", PANGO_ELLIPSIZE_END, "ellipsize-set", TRUE, "width-chars", 22, "max-width-chars", 36, NULL);
+    GtkTreeViewColumn* cookie_domain_col = gtk_tree_view_column_new_with_attributes(tr_full("域名", "網域", "Domain"), cr, "text", 0, NULL);
+    gtk_tree_view_column_set_expand(cookie_domain_col, TRUE);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(tree_ck), cookie_domain_col);
+    cr = gtk_cell_renderer_text_new();
+    g_object_set(cr, "ellipsize", PANGO_ELLIPSIZE_END, "ellipsize-set", TRUE, "width-chars", 18, "max-width-chars", 30, NULL);
+    GtkTreeViewColumn* cookie_name_col = gtk_tree_view_column_new_with_attributes(tr_full("名称", "名稱", "Name"), cr, "text", 1, NULL);
+    gtk_tree_view_column_set_expand(cookie_name_col, TRUE);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(tree_ck), cookie_name_col);
+    gtk_container_add(GTK_CONTAINER(scroll_ck), tree_ck);
+    gtk_box_pack_start(GTK_BOX(cookie_card), scroll_ck, FALSE, FALSE, 0);
+    refresh_cookies_from_manager();
     gtk_box_pack_start(GTK_BOX(priv_box), cookie_card, FALSE, FALSE, 0);
 
     // 卡片 B: 权限与连接安全
@@ -3147,31 +3161,6 @@ void open_preferences_tab(const char* section_name) {
     gtk_stack_add_named(GTK_STACK(preferences_stack), scroll_bm, "bookmarks");
     refresh_bookmark_ui();
 
-    // --- 分类 6: Cookies ---
-    GtkWidget* scroll_ck = gtk_scrolled_window_new(NULL, NULL);
-    gtk_widget_set_vexpand(scroll_ck, TRUE);
-    cookie_store = gtk_list_store_new(4, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_BOOLEAN, G_TYPE_INT);
-    GtkWidget* tree_ck = gtk_tree_view_new_with_model(GTK_TREE_MODEL(cookie_store));
-    g_object_unref(cookie_store);
-    GtkCellRenderer* cookie_toggle = gtk_cell_renderer_toggle_new();
-    GtkTreeViewColumn* cookie_select_col = gtk_tree_view_column_new_with_attributes(tr_full("选择", "選擇", "Select"), cookie_toggle, "active", 2, NULL);
-    gtk_tree_view_append_column(GTK_TREE_VIEW(tree_ck), cookie_select_col);
-    record_selection_columns.push_back(cookie_select_col);
-    g_signal_connect(cookie_toggle, "toggled", G_CALLBACK(on_record_toggle), cookie_store);
-    GtkCellRenderer* cr = gtk_cell_renderer_text_new();
-    g_object_set(cr, "ellipsize", PANGO_ELLIPSIZE_END, "ellipsize-set", TRUE, "width-chars", 22, "max-width-chars", 36, NULL);
-    GtkTreeViewColumn* cookie_domain_col = gtk_tree_view_column_new_with_attributes(tr_full("域名", "網域", "Domain"), cr, "text", 0, NULL);
-    gtk_tree_view_column_set_expand(cookie_domain_col, TRUE);
-    gtk_tree_view_append_column(GTK_TREE_VIEW(tree_ck), cookie_domain_col);
-    cr = gtk_cell_renderer_text_new();
-    g_object_set(cr, "ellipsize", PANGO_ELLIPSIZE_END, "ellipsize-set", TRUE, "width-chars", 18, "max-width-chars", 30, NULL);
-    GtkTreeViewColumn* cookie_name_col = gtk_tree_view_column_new_with_attributes(tr_full("名称", "名稱", "Name"), cr, "text", 1, NULL);
-    gtk_tree_view_column_set_expand(cookie_name_col, TRUE);
-    gtk_tree_view_append_column(GTK_TREE_VIEW(tree_ck), cookie_name_col);
-    gtk_container_add(GTK_CONTAINER(scroll_ck), tree_ck);
-    gtk_stack_add_named(GTK_STACK(preferences_stack), scroll_ck, "cookies");
-    refresh_cookies_from_manager();
-
     // --- 分类 7: 关于 ---
     GtkWidget* about_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 14);
     GtkWidget* about_title = gtk_label_new(tr_full("关于 WebBrowser", "關於 WebBrowser", "About WebBrowser"));
@@ -3232,12 +3221,12 @@ void open_preferences_tab(const char* section_name) {
         else if (idx == 3) name = "developer";
         else if (idx == 4) name = "history";
         else if (idx == 5) name = "bookmarks";
-        else if (idx == 6) name = "cookies";
-        else if (idx == 7) name = "about";
+        else if (idx == 6) name = "about";
+        if (idx == 2) refresh_cookies_from_manager();
         if (name) {
             gtk_stack_set_visible_child_name(GTK_STACK(preferences_stack), name);
         }
-        const bool is_data = (idx >= 4 && idx <= 6);
+        const bool is_data = (idx == 4 || idx == 5);
         if (pref_data_toolbar) gtk_widget_set_visible(pref_data_toolbar, is_data);
         set_record_multi_mode(false);
         if (url_entry && GTK_IS_ENTRY(url_entry) && get_current_page_widget() == preferences_page) {
@@ -3319,16 +3308,6 @@ void on_main_window_destroy(GtkWidget*, gpointer) {
     }
     active_cli_downloads.clear();
     gtk_main_quit();
-}
-
-GtkWidget* create_menu_item_button(const char* label) {
-    GtkWidget* btn = gtk_button_new_with_label(label);
-    gtk_widget_set_can_focus(btn, FALSE);
-    gtk_button_set_relief(GTK_BUTTON(btn), GTK_RELIEF_NONE);
-    gtk_style_context_add_class(gtk_widget_get_style_context(btn), "menu-item-btn");
-    GtkWidget* child = gtk_bin_get_child(GTK_BIN(btn));
-    if (child && GTK_IS_LABEL(child)) gtk_label_set_xalign(GTK_LABEL(child), 0.0f);
-    return btn;
 }
 
 void build_ui(GtkWidget* window) {
@@ -3426,7 +3405,7 @@ void build_ui(GtkWidget* window) {
     gtk_container_add(GTK_CONTAINER(tab_strip_scroll), tab_bar_box);
     gtk_box_pack_start(GTK_BOX(vbox), tab_strip_scroll, FALSE, FALSE, 0);
 
-    // 2. Firefox 风格导航栏：后退 前进 刷新 | 地址栏 | 收藏 | 书签 | ☰ 菜单
+    // 2. Firefox 风格导航栏：后退 前进 刷新 | 地址栏 | 收藏 | 书签 | 历史 | 设置
     GtkWidget* toolbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     gtk_style_context_add_class(gtk_widget_get_style_context(toolbar), "nav-toolbar");
 
@@ -3448,6 +3427,7 @@ void build_ui(GtkWidget* window) {
     gtk_style_context_add_class(gtk_widget_get_style_context(btn_refresh), "flat");
 
     url_entry = gtk_entry_new();
+    gtk_entry_set_width_chars(GTK_ENTRY(url_entry), 8);
     gtk_widget_set_hexpand(url_entry, TRUE);
     gtk_style_context_add_class(gtk_widget_get_style_context(url_entry), "omnibox");
 
@@ -3464,11 +3444,17 @@ void build_ui(GtkWidget* window) {
     gtk_widget_set_can_focus(btn_bookmarks_menu, FALSE);
     gtk_style_context_add_class(gtk_widget_get_style_context(btn_bookmarks_menu), "flat");
 
-    btn_menu = gtk_menu_button_new();
-    gtk_container_add(GTK_CONTAINER(btn_menu), create_vector_icon(ICON_MENU, 18));
-    gtk_button_set_relief(GTK_BUTTON(btn_menu), GTK_RELIEF_NONE);
-    gtk_widget_set_can_focus(btn_menu, FALSE);
-    gtk_style_context_add_class(gtk_widget_get_style_context(btn_menu), "flat");
+    btn_history_menu = gtk_menu_button_new();
+    gtk_container_add(GTK_CONTAINER(btn_history_menu), create_vector_icon(ICON_HISTORY, 18));
+    gtk_button_set_relief(GTK_BUTTON(btn_history_menu), GTK_RELIEF_NONE);
+    gtk_widget_set_can_focus(btn_history_menu, FALSE);
+    gtk_style_context_add_class(gtk_widget_get_style_context(btn_history_menu), "flat");
+
+    btn_settings = gtk_button_new();
+    gtk_container_add(GTK_CONTAINER(btn_settings), create_vector_icon(ICON_SETTINGS, 18));
+    gtk_button_set_relief(GTK_BUTTON(btn_settings), GTK_RELIEF_NONE);
+    gtk_widget_set_can_focus(btn_settings, FALSE);
+    gtk_style_context_add_class(gtk_widget_get_style_context(btn_settings), "flat");
 
     g_signal_connect(url_entry, "focus-in-event", G_CALLBACK(on_url_entry_focus_in), NULL);
     g_signal_connect(url_entry, "focus-out-event", G_CALLBACK(on_url_entry_focus_out), NULL);
@@ -3480,7 +3466,8 @@ void build_ui(GtkWidget* window) {
     gtk_box_pack_start(GTK_BOX(toolbar), url_entry, TRUE, TRUE, 4);
     gtk_box_pack_start(GTK_BOX(toolbar), btn_bookmark, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(toolbar), btn_bookmarks_menu, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(toolbar), btn_menu, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(toolbar), btn_history_menu, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(toolbar), btn_settings, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), toolbar, FALSE, FALSE, 0);
 
     // 书签弹出面板
@@ -3516,36 +3503,40 @@ void build_ui(GtkWidget* window) {
         open_preferences_tab("bookmarks");
     }), NULL);
 
-    // Firefox 汉堡菜单弹出面板
-    menu_popover = gtk_popover_new(btn_menu);
-    GtkWidget* menu_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
-    gtk_container_set_border_width(GTK_CONTAINER(menu_box), 8);
+    // 历史记录弹出面板
+    hist_popover = gtk_popover_new(btn_history_menu);
+    gtk_widget_set_size_request(hist_popover, 340, 320);
+    GtkWidget* hist_pop_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_container_set_border_width(GTK_CONTAINER(hist_pop_box), 10);
+    GtkWidget* hist_pop_header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    hist_popover_title = gtk_label_new(tr_full("历史记录", "歷史記錄", "History"));
+    gtk_widget_set_halign(hist_popover_title, GTK_ALIGN_START);
+    hist_popover_manage_btn = gtk_button_new_with_label(tr_full("打开历史管理", "開啟歷史管理", "Open History Manager"));
+    gtk_box_pack_start(GTK_BOX(hist_pop_header), hist_popover_title, TRUE, TRUE, 0);
+    gtk_box_pack_end(GTK_BOX(hist_pop_header), hist_popover_manage_btn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(hist_pop_box), hist_pop_header, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(hist_pop_box), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 0);
 
-    menu_history_btn = create_menu_item_button(tr_full("历史记录", "歷史記錄", "History"));
-    menu_bookmark_btn = create_menu_item_button(tr_full("书签管理", "書籤管理", "Bookmarks"));
-    menu_cookies_btn = create_menu_item_button("Cookies");
-    menu_settings_btn = create_menu_item_button(tr_full("设置", "設定", "Settings"));
+    GtkWidget* hist_pop_scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(hist_pop_scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_vexpand(hist_pop_scroll, TRUE);
+    hist_popover_listbox = gtk_list_box_new();
+    gtk_list_box_set_selection_mode(GTK_LIST_BOX(hist_popover_listbox), GTK_SELECTION_NONE);
+    gtk_container_add(GTK_CONTAINER(hist_pop_scroll), hist_popover_listbox);
+    gtk_box_pack_start(GTK_BOX(hist_pop_box), hist_pop_scroll, TRUE, TRUE, 0);
+    gtk_widget_show_all(hist_pop_box);
+    gtk_container_add(GTK_CONTAINER(hist_popover), hist_pop_box);
+    gtk_menu_button_set_popover(GTK_MENU_BUTTON(btn_history_menu), hist_popover);
 
-    gtk_box_pack_start(GTK_BOX(menu_box), menu_history_btn, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(menu_box), menu_bookmark_btn, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(menu_box), menu_cookies_btn, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(menu_box), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 4);
-    gtk_box_pack_start(GTK_BOX(menu_box), menu_settings_btn, FALSE, FALSE, 0);
-
-    gtk_widget_show_all(menu_box);
-    gtk_container_add(GTK_CONTAINER(menu_popover), menu_box);
-    gtk_menu_button_set_popover(GTK_MENU_BUTTON(btn_menu), menu_popover);
-
-    g_signal_connect(menu_history_btn, "clicked", G_CALLBACK(+[](GtkWidget*, gpointer) {
+    g_signal_connect(hist_popover, "show", G_CALLBACK(+[](GtkWidget*, gpointer) {
+        rebuild_history_popover_ui();
+    }), NULL);
+    g_signal_connect(hist_popover_manage_btn, "clicked", G_CALLBACK(+[](GtkWidget*, gpointer) {
+        if (hist_popover) gtk_widget_hide(hist_popover);
         open_preferences_tab("history");
     }), NULL);
-    g_signal_connect(menu_bookmark_btn, "clicked", G_CALLBACK(+[](GtkWidget*, gpointer) {
-        open_preferences_tab("bookmarks");
-    }), NULL);
-    g_signal_connect(menu_cookies_btn, "clicked", G_CALLBACK(+[](GtkWidget*, gpointer) {
-        open_preferences_tab("cookies");
-    }), NULL);
-    g_signal_connect(menu_settings_btn, "clicked", G_CALLBACK(+[](GtkWidget*, gpointer) {
+
+    g_signal_connect(btn_settings, "clicked", G_CALLBACK(+[](GtkWidget*, gpointer) {
         open_preferences_tab("general");
     }), NULL);
 
