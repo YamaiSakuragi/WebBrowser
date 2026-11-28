@@ -486,12 +486,12 @@ static bool javascript_enabled = true;
 static bool webgl_enabled = true;
 static bool smooth_scrolling_enabled = true;
 static bool auto_load_images = true;
-static bool dns_prefetch_enabled = true;
+static bool dns_prefetch_enabled = false;
 static bool page_cache_enabled = true;
 static bool webaudio_enabled = true;
-static bool developer_extras_enabled = true;
+static bool developer_extras_enabled = false;
 static bool media_requires_gesture = true;
-static bool resource_sniffer_enabled = true;
+static bool resource_sniffer_enabled = false;
 static double page_zoom_percent = 50.0;
 static bool zoom_setting_version_seen = false;
 
@@ -4005,17 +4005,6 @@ void open_preferences_tab(const char* section_name) {
     gtk_box_pack_start(GTK_BOX(srch_card), srch_desc, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(srch_box), srch_card, FALSE, FALSE, 0);
 
-    pref_srch_action_bar = create_pref_action_bar(G_CALLBACK(+[](GtkWidget*, gpointer) {
-        const gchar* id = pref_search_combo ? gtk_combo_box_get_active_id(GTK_COMBO_BOX(pref_search_combo)) : nullptr;
-        if (id) {
-            search_engine = id;
-            save_settings();
-            update_search_engine_in_all_tabs();
-        }
-        update_pref_action_bars_visibility();
-        update_status_text(tr_full("搜索设置已应用", "搜尋設定已套用", "Search settings applied"), TRUE);
-    }));
-    gtk_box_pack_start(GTK_BOX(srch_box), pref_srch_action_bar, FALSE, FALSE, 0);
 
     // 卡片 2: 管理与添加搜索引擎
     GtkWidget* srch_mgr_card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
@@ -4114,6 +4103,17 @@ void open_preferences_tab(const char* section_name) {
     }), NULL);
     gtk_box_pack_start(GTK_BOX(srch_mgr_card), pref_add_se_btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(srch_box), srch_mgr_card, FALSE, FALSE, 0);
+    pref_srch_action_bar = create_pref_action_bar(G_CALLBACK(+[](GtkWidget*, gpointer) {
+        const gchar* id = pref_search_combo ? gtk_combo_box_get_active_id(GTK_COMBO_BOX(pref_search_combo)) : nullptr;
+        if (id) {
+            search_engine = id;
+            save_settings();
+            update_search_engine_in_all_tabs();
+        }
+        update_pref_action_bars_visibility();
+        update_status_text(tr_full("搜索设置已应用", "搜尋設定已套用", "Search settings applied"), TRUE);
+    }));
+    gtk_box_pack_start(GTK_BOX(srch_box), pref_srch_action_bar, FALSE, FALSE, 0);
     rebuild_search_engines_ui();
     gtk_stack_add_named(GTK_STACK(preferences_stack), srch_box, "search");
 
