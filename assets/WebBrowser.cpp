@@ -24,15 +24,15 @@ enum IconType {
     ICON_STAR_FILLED,
     ICON_BOOKMARKS,
     ICON_DOWNLOAD,
-    ICON_MENU,
     ICON_PLUS,
     ICON_CLOSE,
     ICON_SETTINGS,
-    ICON_LIBRARY,
     ICON_HISTORY,
     ICON_COOKIE,
     ICON_GLOBE,
-    ICON_APP_LOGO
+    ICON_APP_LOGO,
+    ICON_COPY,
+    ICON_WEBKIT_LOGO
 };
 
 static gboolean on_vector_icon_draw(GtkWidget* widget, cairo_t* cr, gpointer) {
@@ -149,16 +149,6 @@ static gboolean on_vector_icon_draw(GtkWidget* widget, cairo_t* cr, gpointer) {
             cairo_stroke(cr);
             break;
         }
-        case ICON_MENU: {
-            cairo_set_line_width(cr, 1.8);
-            double d = s * 0.28;
-            double dy = s * 0.22;
-            cairo_move_to(cr, cx - d, cy - dy); cairo_line_to(cr, cx + d, cy - dy);
-            cairo_move_to(cr, cx - d, cy);      cairo_line_to(cr, cx + d, cy);
-            cairo_move_to(cr, cx - d, cy + dy); cairo_line_to(cr, cx + d, cy + dy);
-            cairo_stroke(cr);
-            break;
-        }
         case ICON_PLUS: {
             cairo_set_line_width(cr, 1.7);
             double d = s * 0.26;
@@ -180,16 +170,6 @@ static gboolean on_vector_icon_draw(GtkWidget* widget, cairo_t* cr, gpointer) {
                 cairo_move_to(cr, cx + r_out * 0.72 * std::cos(a), cy + r_out * 0.72 * std::sin(a));
                 cairo_line_to(cr, cx + r_out * 1.05 * std::cos(a), cy + r_out * 1.05 * std::sin(a));
             }
-            cairo_stroke(cr);
-            break;
-        }
-        case ICON_LIBRARY: {
-            cairo_set_line_width(cr, 1.5);
-            double d = s * 0.28;
-            cairo_rectangle(cr, cx - d, cy - d * 0.85, d * 0.55, d * 1.7);
-            cairo_rectangle(cr, cx - d * 0.25, cy - d * 0.85, d * 0.55, d * 1.7);
-            cairo_move_to(cr, cx + d * 0.45, cy - d * 0.85);
-            cairo_line_to(cr, cx + d * 0.95, cy + d * 0.85);
             cairo_stroke(cr);
             break;
         }
@@ -263,6 +243,40 @@ static gboolean on_vector_icon_draw(GtkWidget* widget, cairo_t* cr, gpointer) {
             cairo_restore(cr);
             break;
         }
+        case ICON_COPY: {
+            cairo_set_line_width(cr, 1.5);
+            double d = s * 0.24;
+            cairo_rectangle(cr, cx - d * 0.45, cy - d * 0.45, d * 1.45, d * 1.55);
+            cairo_stroke(cr);
+            cairo_move_to(cr, cx - d * 0.45, cy - d * 0.90);
+            cairo_line_to(cr, cx + d * 0.55, cy - d * 0.90);
+            cairo_move_to(cr, cx - d * 0.95, cy - d * 0.90);
+            cairo_line_to(cr, cx - d * 0.95, cy + d * 0.65);
+            cairo_line_to(cr, cx - d * 0.45, cy + d * 0.65);
+            cairo_stroke(cr);
+            break;
+        }
+        case ICON_WEBKIT_LOGO: {
+            double r = s * 0.42;
+            cairo_pattern_t* pat = cairo_pattern_create_linear(cx - r, cy - r, cx + r, cy + r);
+            cairo_pattern_add_color_stop_rgb(pat, 0.0, 0.12, 0.56, 0.96);
+            cairo_pattern_add_color_stop_rgb(pat, 1.0, 0.05, 0.30, 0.72);
+            cairo_set_source(cr, pat);
+            cairo_arc(cr, cx, cy, r, 0, 2 * M_PI);
+            cairo_fill(cr);
+            cairo_pattern_destroy(pat);
+
+            cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.95);
+            cairo_set_line_width(cr, 1.8);
+            cairo_arc(cr, cx, cy, r * 0.68, 0, 2 * M_PI);
+            cairo_stroke(cr);
+            cairo_move_to(cr, cx, cy);
+            cairo_line_to(cr, cx + r * 0.42, cy - r * 0.42);
+            cairo_move_to(cr, cx, cy);
+            cairo_line_to(cr, cx - r * 0.42, cy + r * 0.42);
+            cairo_stroke(cr);
+            break;
+        }
     }
     return FALSE;
 }
@@ -317,9 +331,10 @@ static GtkWidget* create_favicon_widget(cairo_surface_t* surf, int size_px) {
 }
 
 static void run_selection_toolbar_script(WebKitWebView* view);
+static void context_menu_run_js_finished(GObject* object, GAsyncResult* result, gpointer);
 void open_preferences_tab(const char* section_name);
-void sync_tab_bar();
-void update_navigation_state();
+void sync_tab_bar(int explicit_current = -1);
+void update_navigation_state(GtkWidget* explicit_page = nullptr);
 
 static GtkWidget* notebook = nullptr;
 static GtkWidget* tab_bar_box = nullptr;
@@ -361,15 +376,18 @@ struct DownloadCliItem {
     gint64 last_log_time_us = 0;
     guint64 last_log_bytes = 0;
     double speed_bps = 0.0;
+    bool expect_image = false;
     WebKitDownload* wk_download = nullptr;
 };
 
 static std::vector<std::shared_ptr<DownloadCliItem>> active_cli_downloads;
+static bool next_download_expects_image = false;
 
 // 单窗口统一内嵌设置与数据管理子页面（Firefox 风格 about:preferences）
 static GtkWidget* preferences_page = nullptr;
 static GtkWidget* preferences_sidebar = nullptr;
 static GtkWidget* preferences_stack = nullptr;
+static GtkWidget* pref_right_scroll = nullptr;
 static std::vector<int> pref_back_stack;
 static std::vector<int> pref_forward_stack;
 static int pref_current_row = -1;
@@ -379,8 +397,14 @@ static bool pref_syncing_ui = false;
 static GtkWidget* pref_theme_combo = nullptr;
 static GtkWidget* pref_lang_combo = nullptr;
 static GtkWidget* pref_zoom_scale = nullptr;
+static GtkWidget* pref_download_dir_entry = nullptr;
 static GtkWidget* pref_gen_action_bar = nullptr;
 static GtkWidget* pref_search_combo = nullptr;
+static GtkWidget* pref_search_list_box = nullptr;
+static GtkWidget* pref_custom_search_name_entry = nullptr;
+static GtkWidget* pref_custom_search_url_entry = nullptr;
+static GtkWidget* pref_custom_search_home_entry = nullptr;
+static GtkWidget* pref_add_se_btn = nullptr;
 static GtkWidget* pref_srch_action_bar = nullptr;
 static GtkWidget* pref_cookie_combo = nullptr;
 static GtkWidget* pref_media_check = nullptr;
@@ -390,6 +414,13 @@ static GtkTextBuffer* pref_ad_buf = nullptr;
 static GtkWidget* pref_priv_action_bar = nullptr;
 static GtkWidget* pref_js_check = nullptr;
 static GtkWidget* pref_webgl_check = nullptr;
+static GtkWidget* pref_smooth_scroll_check = nullptr;
+static GtkWidget* pref_auto_images_check = nullptr;
+static GtkWidget* pref_dns_prefetch_check = nullptr;
+static GtkWidget* pref_page_cache_check = nullptr;
+static GtkWidget* pref_webaudio_check = nullptr;
+static GtkWidget* pref_inspector_check = nullptr;
+static GtkWidget* pref_sniffer_check = nullptr;
 static GtkWidget* pref_dev_action_bar = nullptr;
 
 static GtkListStore* history_store = nullptr;
@@ -408,6 +439,12 @@ static GtkWidget* hist_popover_title = nullptr;
 static GtkWidget* hist_popover_manage_btn = nullptr;
 static GtkWidget* btn_history_menu = nullptr;
 
+static GtkWidget* sniffer_popover = nullptr;
+static GtkWidget* sniffer_popover_listbox = nullptr;
+static GtkWidget* sniffer_popover_title = nullptr;
+static GtkWidget* sniffer_popover_refresh_btn = nullptr;
+static GtkWidget* btn_sniffer_menu = nullptr;
+
 static GtkWidget* record_multi_button = nullptr;
 static GtkWidget* record_select_all_button = nullptr;
 static GtkWidget* record_invert_button = nullptr;
@@ -420,7 +457,15 @@ static std::vector<GtkTreeViewColumn*> record_selection_columns;
 static std::string settings_file = base_dir + "/settings.conf";
 static std::string ui_theme = "light"; // "light", "dark"
 static std::string ui_language = "zh"; // "zh", "en", "zh-TW"
-static std::string search_engine = "google"; // "google", "bing", "baidu"
+struct CustomSearchEngine {
+    std::string id;
+    std::string name;
+    std::string search_url;
+    std::string home_url;
+};
+static std::vector<CustomSearchEngine> custom_search_engines;
+static std::string search_engines_file = base_dir + "/search_engines.txt";
+static std::string search_engine = "google"; // "google", "bing", or custom id
 static std::string cookie_policy = "always"; // "always", "no_third_party", "never"
 static bool ignore_tls_errors = true;
 static bool adblock_enabled = false;
@@ -439,7 +484,14 @@ static GtkWidget* icon_bookmark = nullptr;
 static GtkWidget* btn_settings = nullptr;
 static bool javascript_enabled = true;
 static bool webgl_enabled = true;
+static bool smooth_scrolling_enabled = true;
+static bool auto_load_images = true;
+static bool dns_prefetch_enabled = true;
+static bool page_cache_enabled = true;
+static bool webaudio_enabled = true;
+static bool developer_extras_enabled = true;
 static bool media_requires_gesture = true;
+static bool resource_sniffer_enabled = true;
 static double page_zoom_percent = 50.0;
 static bool zoom_setting_version_seen = false;
 
@@ -621,20 +673,85 @@ std::string url_encode(const std::string& value) {
     return encoded;
 }
 
+const CustomSearchEngine* find_custom_search_engine(const std::string& id) {
+    for (const auto& ce : custom_search_engines) {
+        if (ce.id == id) return &ce;
+    }
+    return nullptr;
+}
+
+void load_custom_search_engines() {
+    custom_search_engines.clear();
+    FILE* f = fopen(search_engines_file.c_str(), "r");
+    if (!f) return;
+    char buf[4096];
+    while (fgets(buf, sizeof(buf), f)) {
+        std::string line(buf);
+        while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) line.pop_back();
+        size_t p1 = line.find('|');
+        if (p1 == std::string::npos) continue;
+        size_t p2 = line.find('|', p1 + 1);
+        if (p2 == std::string::npos) continue;
+        size_t p3 = line.find('|', p2 + 1);
+        if (p3 == std::string::npos) continue;
+        CustomSearchEngine ce{
+            line.substr(0, p1),
+            line.substr(p1 + 1, p2 - p1 - 1),
+            line.substr(p2 + 1, p3 - p2 - 1),
+            line.substr(p3 + 1)
+        };
+        if (!ce.id.empty() && !ce.name.empty() && !ce.search_url.empty()) {
+            custom_search_engines.push_back(ce);
+        }
+    }
+    fclose(f);
+}
+
+void save_custom_search_engines() {
+    FILE* f = fopen(search_engines_file.c_str(), "w");
+    if (!f) return;
+    for (const auto& ce : custom_search_engines) {
+        fprintf(f, "%s|%s|%s|%s\n",
+            sanitize_field(ce.id).c_str(),
+            sanitize_field(ce.name).c_str(),
+            sanitize_field(ce.search_url).c_str(),
+            sanitize_field(ce.home_url).c_str());
+    }
+    fclose(f);
+}
+
 std::string get_home_url() {
     if (search_engine == "bing") return "https://www.bing.com";
-    if (search_engine == "baidu") return "https://www.baidu.com";
+    if (const auto* ce = find_custom_search_engine(search_engine)) {
+        if (!ce->home_url.empty()) return ce->home_url;
+        if (!ce->search_url.empty()) {
+            size_t scheme = ce->search_url.find("://");
+            if (scheme != std::string::npos) {
+                size_t slash = ce->search_url.find('/', scheme + 3);
+                return (slash != std::string::npos) ? ce->search_url.substr(0, slash + 1) : ce->search_url;
+            }
+        }
+    }
     return "https://www.google.com";
 }
 
 std::string get_search_url_prefix() {
     if (search_engine == "bing") return "https://www.bing.com/search?q=";
-    if (search_engine == "baidu") return "https://www.baidu.com/s?wd=";
+    if (const auto* ce = find_custom_search_engine(search_engine)) {
+        if (!ce->search_url.empty()) return ce->search_url;
+    }
     return "https://www.google.com/search?q=";
 }
 
 std::string get_search_url(const std::string& query) {
-    return get_search_url_prefix() + url_encode(query);
+    std::string prefix = get_search_url_prefix();
+    std::string encoded = url_encode(query);
+    size_t ph = prefix.find("%s");
+    if (ph != std::string::npos) {
+        prefix.replace(ph, 2, encoded);
+        return prefix;
+    }
+    return prefix + encoded;
 }
 
 std::string trim_whitespace(const std::string& str) {
@@ -871,8 +988,6 @@ void apply_app_theme() {
         ".nav-toolbar { background-color: #ffffff; border-bottom: 1px solid #dcdce4; padding: 6px 8px; }"
         ".omnibox { background-color: #f0f0f4; color: #15141a; border: 1px solid transparent; border-radius: 6px; padding: 5px 10px; }"
         ".omnibox:focus { background-color: #ffffff; border-color: #0060df; }"
-        ".menu-item-btn { border: none; border-radius: 5px; padding: 7px 12px; background-color: transparent; }"
-        ".menu-item-btn:hover { background-color: #e7e7ee; }"
         ".fx-sidebar { background-color: #f9f9fb; border-right: 1px solid #e0e0e6; padding: 12px 8px; }"
         ".fx-sidebar row { border-radius: 6px; padding: 8px 12px; margin: 2px 0; background-color: transparent; }"
         ".fx-sidebar row:selected { background-color: #e0ecff; color: #0060df; font-weight: bold; }"
@@ -907,8 +1022,6 @@ void apply_app_theme() {
         ".nav-toolbar { background-color: #2b2a33; border-bottom: 1px solid #1c1b22; padding: 6px 8px; }"
         ".omnibox { background-color: #1c1b22; color: #fbfbfe; border: 1px solid transparent; border-radius: 6px; padding: 5px 10px; }"
         ".omnibox:focus { background-color: #23222b; border-color: #00ddff; }"
-        ".menu-item-btn { border: none; border-radius: 5px; padding: 7px 12px; background-color: transparent; }"
-        ".menu-item-btn:hover { background-color: #3a3944; }"
         ".fx-sidebar { background-color: #1c1b22; border-right: 1px solid #32313c; padding: 12px 8px; }"
         ".fx-sidebar row { border-radius: 6px; padding: 8px 12px; margin: 2px 0; background-color: transparent; }"
         ".fx-sidebar row:selected { background-color: #283a4e; color: #75d8ff; font-weight: bold; }"
@@ -938,8 +1051,8 @@ void apply_app_theme() {
     if (main_window) gtk_widget_queue_draw(main_window);
 }
 
-void update_navigation_state() {
-    GtkWidget* cur_page = get_current_page_widget();
+void update_navigation_state(GtkWidget* explicit_page) {
+    GtkWidget* cur_page = explicit_page ? explicit_page : get_current_page_widget();
     const char* ptype = get_page_type(cur_page);
 
     if (strcmp(ptype, "preferences") == 0) {
@@ -963,6 +1076,7 @@ void update_navigation_state() {
             }
         }
         if (btn_bookmark) gtk_widget_hide(btn_bookmark);
+        if (btn_sniffer_menu) gtk_widget_hide(btn_sniffer_menu);
         return;
     }
 
@@ -983,6 +1097,9 @@ void update_navigation_state() {
         gtk_widget_set_sensitive(btn_refresh, TRUE);
         set_vector_icon_type(icon_refresh, ICON_REFRESH);
         gtk_widget_set_tooltip_text(btn_refresh, tr_full("刷新", "重新整理", "Reload"));
+    }
+    if (btn_sniffer_menu) {
+        gtk_widget_set_visible(btn_sniffer_menu, resource_sniffer_enabled);
     }
     if (btn_bookmark) {
         gtk_widget_show(btn_bookmark);
@@ -1012,6 +1129,9 @@ void apply_ui_language() {
     if (bm_popover_manage_btn) gtk_button_set_label(GTK_BUTTON(bm_popover_manage_btn), tr_full("打开书签管理", "開啟書籤管理", "Open Bookmarks Manager"));
     if (hist_popover_title) gtk_label_set_text(GTK_LABEL(hist_popover_title), tr_full("历史记录", "歷史記錄", "History"));
     if (hist_popover_manage_btn) gtk_button_set_label(GTK_BUTTON(hist_popover_manage_btn), tr_full("打开历史管理", "開啟歷史管理", "Open History Manager"));
+    if (btn_sniffer_menu) gtk_widget_set_tooltip_text(btn_sniffer_menu, tr_full("资源嗅探", "資源嗅探", "Resource Sniffer"));
+    if (sniffer_popover_title) gtk_label_set_text(GTK_LABEL(sniffer_popover_title), tr_full("资源嗅探", "資源嗅探", "Resource Sniffer"));
+    if (sniffer_popover_refresh_btn) gtk_widget_set_tooltip_text(sniffer_popover_refresh_btn, tr_full("刷新嗅探列表", "重新整理嗅探列表", "Refresh sniffed resources"));
 
     if (main_window) gtk_window_set_title(GTK_WINDOW(main_window), "WebBrowser");
     if (web_context) {
@@ -1044,13 +1164,20 @@ void load_settings() {
         std::string value = trim_whitespace(line.substr(eq + 1));
         if (key == "theme" && (value == "light" || value == "dark")) ui_theme = value;
         else if (key == "language" && (value == "zh" || value == "en" || value == "zh-TW")) ui_language = value;
-        else if (key == "search_engine" && (value == "google" || value == "bing" || value == "baidu")) search_engine = value;
+        else if (key == "search_engine" && !value.empty() && value != "baidu") search_engine = value;
         else if (key == "cookie_policy" && (value == "always" || value == "no_third_party" || value == "never")) cookie_policy = value;
         else if (key == "ignore_tls_errors") ignore_tls_errors = (value == "1");
         else if (key == "adblock_enabled") adblock_enabled = (value == "1");
         else if (key == "download_dir" && !value.empty()) download_dir = value;
         else if (key == "javascript_enabled") javascript_enabled = (value == "1");
         else if (key == "webgl_enabled") webgl_enabled = (value == "1");
+        else if (key == "resource_sniffer_enabled") resource_sniffer_enabled = (value == "1");
+        else if (key == "smooth_scrolling_enabled") smooth_scrolling_enabled = (value == "1");
+        else if (key == "auto_load_images") auto_load_images = (value == "1");
+        else if (key == "dns_prefetch_enabled") dns_prefetch_enabled = (value == "1");
+        else if (key == "page_cache_enabled") page_cache_enabled = (value == "1");
+        else if (key == "webaudio_enabled") webaudio_enabled = (value == "1");
+        else if (key == "developer_extras_enabled") developer_extras_enabled = (value == "1");
         else if (key == "media_requires_gesture") media_requires_gesture = (value == "1");
         else if (key == "page_zoom_percent") page_zoom_percent = std::max(0.0, std::min(100.0, atof(value.c_str())));
         else if (key == "zoom_setting_version") zoom_setting_version_seen = (value == "4");
@@ -1062,15 +1189,48 @@ void load_settings() {
 void save_settings() {
     FILE* f = fopen(settings_file.c_str(), "w");
     if (!f) return;
-    fprintf(f, "theme=%s\nlanguage=%s\nsearch_engine=%s\ncookie_policy=%s\nignore_tls_errors=%d\nadblock_enabled=%d\ndownload_dir=%s\njavascript_enabled=%d\nwebgl_enabled=%d\nmedia_requires_gesture=%d\npage_zoom_percent=%.0f\nzoom_setting_version=4\n",
+    fprintf(f, "theme=%s\nlanguage=%s\nsearch_engine=%s\ncookie_policy=%s\nignore_tls_errors=%d\nadblock_enabled=%d\ndownload_dir=%s\njavascript_enabled=%d\nwebgl_enabled=%d\nmedia_requires_gesture=%d\nsmooth_scrolling_enabled=%d\nauto_load_images=%d\ndns_prefetch_enabled=%d\npage_cache_enabled=%d\nwebaudio_enabled=%d\ndeveloper_extras_enabled=%d\nresource_sniffer_enabled=%d\npage_zoom_percent=%.0f\nzoom_setting_version=4\n",
         ui_theme.c_str(), ui_language.c_str(), search_engine.c_str(), cookie_policy.c_str(),
         ignore_tls_errors ? 1 : 0, adblock_enabled ? 1 : 0, download_dir.c_str(),
-        javascript_enabled ? 1 : 0, webgl_enabled ? 1 : 0, media_requires_gesture ? 1 : 0, page_zoom_percent);
+        javascript_enabled ? 1 : 0, webgl_enabled ? 1 : 0, media_requires_gesture ? 1 : 0,
+        (smooth_scrolling_enabled ? 1 : 0), (auto_load_images ? 1 : 0), (dns_prefetch_enabled ? 1 : 0), (page_cache_enabled ? 1 : 0), (webaudio_enabled ? 1 : 0), (developer_extras_enabled ? 1 : 0), (resource_sniffer_enabled ? 1 : 0), page_zoom_percent);
     fclose(f);
+}
+
+static std::string to_lower_ascii(std::string s) {
+    for (char& c : s) c = (char)g_ascii_tolower((guchar)c);
+    return s;
+}
+
+static std::string mime_to_image_ext(const std::string& raw_mime) {
+    std::string m = to_lower_ascii(raw_mime);
+    size_t semi = m.find(';');
+    if (semi != std::string::npos) m = m.substr(0, semi);
+    m = trim_whitespace(m);
+    if (m == "image/jpeg" || m == "image/jpg" || m == "image/pjpeg") return ".jpg";
+    if (m == "image/png" || m == "image/x-png") return ".png";
+    if (m == "image/webp") return ".webp";
+    if (m == "image/gif") return ".gif";
+    if (m == "image/svg+xml") return ".svg";
+    if (m == "image/avif") return ".avif";
+    if (m == "image/bmp" || m == "image/x-ms-bmp") return ".bmp";
+    if (m == "image/x-icon" || m == "image/vnd.microsoft.icon") return ".ico";
+    if (m == "image/tiff") return ".tiff";
+    return "";
+}
+
+static bool has_image_extension(const std::string& filename) {
+    size_t dot = filename.rfind('.');
+    if (dot == std::string::npos) return false;
+    std::string ext = to_lower_ascii(filename.substr(dot));
+    return ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".webp" ||
+           ext == ".gif" || ext == ".svg" || ext == ".avif" || ext == ".bmp" ||
+           ext == ".ico" || ext == ".tif" || ext == ".tiff";
 }
 
 static std::string extract_filename_from_url(const std::string& url) {
     if (url.empty()) return "";
+    if (url.rfind("data:", 0) == 0 || url.rfind("blob:", 0) == 0) return "";
     std::string clean = url;
     size_t q = clean.find_first_of("?#");
     if (q != std::string::npos) clean = clean.substr(0, q);
@@ -1104,10 +1264,70 @@ static std::string make_unique_download_path(const std::string& dir, const std::
     return full;
 }
 
+static bool save_data_image_uri(const std::string& data_uri) {
+    if (data_uri.rfind("data:", 0) != 0) return false;
+    size_t comma = data_uri.find(',');
+    if (comma == std::string::npos) return false;
+
+    std::string header = to_lower_ascii(data_uri.substr(5, comma - 5));
+    std::string payload = data_uri.substr(comma + 1);
+    bool is_base64 = (header.find(";base64") != std::string::npos);
+    size_t semi = header.find(';');
+    std::string mime = (semi != std::string::npos) ? header.substr(0, semi) : header;
+    mime = trim_whitespace(mime);
+
+    std::string ext = mime_to_image_ext(mime);
+    if (ext.empty()) {
+        if (mime.rfind("image/", 0) == 0) ext = ".png";
+        else return false;
+    }
+
+    std::string dest_path = make_unique_download_path(download_dir, "image" + ext);
+    size_t slash = dest_path.rfind('/');
+    std::string fname = (slash != std::string::npos) ? dest_path.substr(slash + 1) : dest_path;
+
+    bool ok = false;
+    gsize out_len = 0;
+    if (is_base64) {
+        guchar* decoded = g_base64_decode(payload.c_str(), &out_len);
+        if (decoded && out_len > 0) {
+            FILE* fp = fopen(dest_path.c_str(), "wb");
+            if (fp) {
+                ok = (fwrite(decoded, 1, out_len, fp) == out_len);
+                fclose(fp);
+            }
+        }
+        g_free(decoded);
+    } else {
+        gchar* unescaped = g_uri_unescape_string(payload.c_str(), nullptr);
+        if (unescaped) {
+            out_len = strlen(unescaped);
+            FILE* fp = fopen(dest_path.c_str(), "wb");
+            if (fp) {
+                ok = (fwrite(unescaped, 1, out_len, fp) == out_len);
+                fclose(fp);
+            }
+            g_free(unescaped);
+        }
+    }
+
+    if (ok) {
+        std::fprintf(stdout, "[Download] 下载完成: %s (%s) -> %s\n",
+            fname.c_str(), format_bytes((guint64)out_len).c_str(), dest_path.c_str());
+        std::fflush(stdout);
+        update_status_text((std::string(tr_full("下载完成: ", "下載完成: ", "Download finished: ")) + fname).c_str(), TRUE);
+    } else {
+        update_status_text(tr_full("图片保存失败", "圖片儲存失敗", "Failed to save image"), TRUE);
+    }
+    return ok;
+}
+
 void on_download_started(WebKitWebContext*, WebKitDownload* download, gpointer) {
     if (!download) return;
     auto item = std::make_shared<DownloadCliItem>();
     item->last_log_time_us = g_get_monotonic_time();
+    item->expect_image = next_download_expects_image;
+    next_download_expects_image = false;
     item->wk_download = WEBKIT_DOWNLOAD(g_object_ref(download));
 
     WebKitURIRequest* req = webkit_download_get_request(download);
@@ -1121,8 +1341,41 @@ void on_download_started(WebKitWebContext*, WebKitDownload* download, gpointer) 
     g_signal_connect_data(download, "decide-destination", G_CALLBACK(+[](WebKitDownload* dl, const gchar* suggested_filename, gpointer data) -> gboolean {
         auto* sp = static_cast<std::shared_ptr<DownloadCliItem>*>(data);
         auto item = *sp;
-        std::string fname = (suggested_filename && *suggested_filename) ? suggested_filename : extract_filename_from_url(item->url);
-        if (fname.empty()) fname = "download";
+        WebKitURIResponse* resp = webkit_download_get_response(dl);
+        const gchar* mime_cstr = resp ? webkit_uri_response_get_mime_type(resp) : nullptr;
+        std::string mime = mime_cstr ? to_lower_ascii(mime_cstr) : "";
+
+        if (item->expect_image &&
+            (mime.rfind("text/html", 0) == 0 || mime.rfind("application/xhtml", 0) == 0)) {
+            std::fprintf(stdout, "[Download] 保存图片失败: 服务器返回了网页 (%s) 而非图片 -> %s\n",
+                mime.c_str(), item->url.c_str());
+            std::fflush(stdout);
+            update_status_text(tr_full("保存失败：目标返回的不是图片", "儲存失敗：目標傳回的不是圖片", "Save failed: target did not return an image"), TRUE);
+            webkit_download_cancel(dl);
+            return TRUE;
+        }
+
+        const gchar* resp_suggested = resp ? webkit_uri_response_get_suggested_filename(resp) : nullptr;
+        std::string fname;
+        if (suggested_filename && *suggested_filename) fname = suggested_filename;
+        else if (resp_suggested && *resp_suggested) fname = resp_suggested;
+        else fname = extract_filename_from_url(item->url);
+        if (fname.empty()) fname = item->expect_image ? "image" : "download";
+
+        std::string target_ext = mime_to_image_ext(mime);
+        if (!target_ext.empty() && !has_image_extension(fname)) {
+            size_t dot = fname.rfind('.');
+            if (dot != std::string::npos && dot > 0) {
+                std::string cur_ext = to_lower_ascii(fname.substr(dot));
+                if (cur_ext == ".php" || cur_ext == ".asp" || cur_ext == ".aspx" ||
+                    cur_ext == ".jsp" || cur_ext == ".cgi" || cur_ext == ".html" ||
+                    cur_ext == ".htm" || cur_ext == ".do" || cur_ext == ".action") {
+                    fname = fname.substr(0, dot);
+                }
+            }
+            fname += target_ext;
+        }
+
         std::string dest_path = make_unique_download_path(download_dir, fname);
         size_t slash = dest_path.rfind('/');
         item->destination_path = dest_path;
@@ -1311,6 +1564,458 @@ void rebuild_bookmark_popover_ui() {
     }
 }
 
+struct SniffedResource {
+    std::string url;
+    std::string mime;
+    std::string category; // "video", "audio", "stream", "image", "other"
+    guint64 size = 0;
+};
+
+static std::vector<SniffedResource>* get_webview_sniffed_list(WebKitWebView* view, bool create_if_missing) {
+    if (!view || !WEBKIT_IS_WEB_VIEW(view)) return nullptr;
+    auto* list = static_cast<std::vector<SniffedResource>*>(g_object_get_data(G_OBJECT(view), "wb_sniffed_resources"));
+    if (!list && create_if_missing) {
+        list = new std::vector<SniffedResource>();
+        g_object_set_data_full(G_OBJECT(view), "wb_sniffed_resources", list, [](gpointer p) {
+            delete static_cast<std::vector<SniffedResource>*>(p);
+        });
+    }
+    return list;
+}
+
+static void clear_webview_sniffed_list(WebKitWebView* view) {
+    auto* list = get_webview_sniffed_list(view, false);
+    if (list) list->clear();
+}
+
+static std::string classify_sniffed_resource(const std::string& url, const std::string& raw_mime) {
+    std::string m = to_lower_ascii(raw_mime);
+    size_t semi = m.find(';');
+    if (semi != std::string::npos) m = m.substr(0, semi);
+    m = trim_whitespace(m);
+
+    std::string clean_url = to_lower_ascii(url);
+    size_t q = clean_url.find_first_of("?#");
+    if (q != std::string::npos) clean_url = clean_url.substr(0, q);
+
+    auto ends_with = [&](const std::string& suf) -> bool {
+        return clean_url.size() >= suf.size() &&
+               clean_url.compare(clean_url.size() - suf.size(), suf.size(), suf) == 0;
+    };
+
+    if (m == "application/vnd.apple.mpegurl" || m == "application/x-mpegurl" ||
+        m == "application/dash+xml" || ends_with(".m3u8") || ends_with(".mpd")) {
+        return "stream";
+    }
+    if (m.rfind("video/", 0) == 0 || ends_with(".mp4") || ends_with(".webm") ||
+        ends_with(".mkv") || ends_with(".mov") || ends_with(".flv") ||
+        ends_with(".avi") || ends_with(".ts") || ends_with(".m4s") || ends_with(".m4v")) {
+        return "video";
+    }
+    if (m.rfind("audio/", 0) == 0 || ends_with(".mp3") || ends_with(".m4a") ||
+        ends_with(".aac") || ends_with(".ogg") || ends_with(".wav") || ends_with(".flac")) {
+        return "audio";
+    }
+    if (m.rfind("image/", 0) == 0 || has_image_extension(clean_url)) {
+        return "image";
+    }
+    if (m == "application/pdf" || m == "application/zip" ||
+        ends_with(".pdf") || ends_with(".zip") || ends_with(".apk")) {
+        return "other";
+    }
+    if ((m == "application/octet-stream" || ends_with(".m4s") || ends_with(".ts") || ends_with(".key"))) {
+        return "stream";
+    }
+    return "";
+}
+
+static void record_sniffed_resource(WebKitWebView* view, const std::string& url, const std::string& mime, guint64 size) {
+    if (!resource_sniffer_enabled || !view || !WEBKIT_IS_WEB_VIEW(view) || url.empty()) return;
+    if (url.rfind("about:", 0) == 0 || url.rfind("javascript:", 0) == 0 || url.rfind("data:", 0) == 0) return;
+
+    std::string cat = classify_sniffed_resource(url, mime);
+    if (cat.empty()) return;
+
+    auto* list = get_webview_sniffed_list(view, true);
+    if (!list) return;
+    for (auto& existing : *list) {
+        if (existing.url == url) {
+            if (existing.mime.empty() && !mime.empty()) existing.mime = mime;
+            if (existing.size == 0 && size > 0) existing.size = size;
+            return;
+        }
+    }
+    if (list->size() >= 500) return;
+    SniffedResource item;
+    item.url = url;
+    item.mime = mime;
+    item.category = cat;
+    item.size = size;
+    list->push_back(item);
+}
+
+struct SniffResourceCtx {
+    WebKitWebView* view;
+    gboolean view_alive;
+};
+
+static void on_sniff_view_weak_notify(gpointer data, GObject*) {
+    auto* ctx = static_cast<SniffResourceCtx*>(data);
+    if (ctx) {
+        ctx->view_alive = FALSE;
+        ctx->view = nullptr;
+    }
+}
+
+static void on_sniff_ctx_destroy(gpointer data, GClosure*) {
+    auto* ctx = static_cast<SniffResourceCtx*>(data);
+    if (!ctx) return;
+    if (ctx->view_alive && ctx->view) {
+        g_object_weak_unref(G_OBJECT(ctx->view), on_sniff_view_weak_notify, ctx);
+    }
+    delete ctx;
+}
+
+static void on_sniff_resource_response(WebKitWebResource* resource, GParamSpec*, gpointer data) {
+    auto* ctx = static_cast<SniffResourceCtx*>(data);
+    if (!ctx || !ctx->view_alive || !ctx->view || !WEBKIT_IS_WEB_VIEW(ctx->view)) return;
+    if (!resource_sniffer_enabled || !resource || !WEBKIT_IS_WEB_RESOURCE(resource)) return;
+
+    WebKitURIResponse* resp = webkit_web_resource_get_response(resource);
+    if (!resp) return;
+    const gchar* uri = webkit_web_resource_get_uri(resource);
+    if (!uri || !*uri) uri = webkit_uri_response_get_uri(resp);
+    if (!uri || !*uri) return;
+
+    const gchar* mime = webkit_uri_response_get_mime_type(resp);
+    guint64 size = webkit_uri_response_get_content_length(resp);
+    record_sniffed_resource(ctx->view, uri, mime ? mime : "", size);
+}
+
+static void on_webview_resource_load_started(WebKitWebView* view, WebKitWebResource* resource, WebKitURIRequest* request, gpointer) {
+    if (!resource_sniffer_enabled || !view || !resource) return;
+    const gchar* uri = webkit_web_resource_get_uri(resource);
+    if ((!uri || !*uri) && request) uri = webkit_uri_request_get_uri(request);
+    if (uri && *uri) {
+        record_sniffed_resource(view, uri, "", 0);
+    }
+    auto* ctx = new SniffResourceCtx{view, TRUE};
+    g_object_weak_ref(G_OBJECT(view), on_sniff_view_weak_notify, ctx);
+    g_signal_connect_data(resource, "notify::response",
+        G_CALLBACK(on_sniff_resource_response), ctx, on_sniff_ctx_destroy, (GConnectFlags)0);
+}
+
+static void apply_sniffer_user_scripts() {
+    if (!user_content_manager) return;
+    webkit_user_content_manager_remove_all_scripts(user_content_manager);
+
+    const char* load_hook_js =
+        "window.addEventListener('load', function() {"
+        "  try { window.webkit.messageHandlers.wb_page_loaded.postMessage(location.href); } catch(e) {}"
+        "}, { once: true });";
+    WebKitUserScript* load_script = webkit_user_script_new(
+        load_hook_js,
+        WEBKIT_USER_CONTENT_INJECT_TOP_FRAME,
+        WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_END,
+        NULL, NULL);
+    webkit_user_content_manager_add_script(user_content_manager, load_script);
+    webkit_user_script_unref(load_script);
+
+    if (resource_sniffer_enabled) {
+        const char* high_hook_js = R"JS((() => {
+          if (window.__wbHighSniffHooked) return;
+          window.__wbHighSniffHooked = true;
+          const mediaRe = /\.(m3u8|mpd|mp4|webm|flv|mkv|mov|ts|m4s|mp3|m4a|aac|ogg|wav)(\?|$)/i;
+          const report = (u, kind) => {
+            try {
+              if (!u || typeof u !== 'string') return;
+              if (u.startsWith('data:') || u.startsWith('javascript:') || u.startsWith('about:')) return;
+              if (u.startsWith('blob:') || mediaRe.test(u)) {
+                if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.wb_sniffed_resources) {
+                  window.webkit.messageHandlers.wb_sniffed_resources.postMessage(JSON.stringify({
+                    pageUrl: location.href,
+                    items: [{url: u, kind: kind || 'video/'}]
+                  }));
+                }
+              }
+            } catch (e) {}
+          };
+          if (window.fetch) {
+            const origFetch = window.fetch;
+            window.fetch = function(input, init) {
+              try {
+                const u = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+                report(u, 'video/');
+              } catch (e) {}
+              return origFetch.apply(this, arguments);
+            };
+          }
+          if (window.XMLHttpRequest && window.XMLHttpRequest.prototype.open) {
+            const origOpen = window.XMLHttpRequest.prototype.open;
+            window.XMLHttpRequest.prototype.open = function(method, url) {
+              try { report(String(url || ''), 'video/'); } catch (e) {}
+              return origOpen.apply(this, arguments);
+            };
+          }
+          if (window.URL && window.URL.createObjectURL) {
+            const origCreate = window.URL.createObjectURL;
+            window.URL.createObjectURL = function(obj) {
+              const res = origCreate.apply(this, arguments);
+              try {
+                const t = (obj && obj.type) ? obj.type : 'video/';
+                report(res, t);
+              } catch (e) {}
+              return res;
+            };
+          }
+        })();)JS";
+        WebKitUserScript* hook_script = webkit_user_script_new(
+            high_hook_js,
+            WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
+            WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START,
+            NULL, NULL);
+        webkit_user_content_manager_add_script(user_content_manager, hook_script);
+        webkit_user_script_unref(hook_script);
+    }
+}
+
+static void run_dom_sniffer_script(WebKitWebView* view) {
+    if (!resource_sniffer_enabled || !view || !WEBKIT_IS_WEB_VIEW(view)) return;
+    const char* js = R"JS((() => { try {
+        const seen = new Set();
+        const items = [];
+        const pushItem = (u, kind) => {
+          if (!u || typeof u !== 'string') return;
+          if (u.startsWith('data:') || u.startsWith('javascript:') || u.startsWith('about:')) return;
+          if (seen.has(u)) return;
+          seen.add(u);
+          items.push({url: u, kind: kind});
+        };
+        const extractCssUrls = (cssVal, kind) => {
+          if (!cssVal || cssVal === 'none') return;
+          const re = /url\(\s*['"]?([^'")]+)['"]?\s*\)/gi;
+          let m;
+          while ((m = re.exec(cssVal)) !== null) {
+            if (m[1]) pushItem(m[1], kind);
+          }
+        };
+
+        try {
+          if (window.performance && performance.getEntriesByType) {
+            performance.getEntriesByType('resource').forEach(entry => {
+              if (entry && entry.name) {
+                let k = '';
+                if (entry.initiatorType === 'video') k = 'video/';
+                else if (entry.initiatorType === 'audio') k = 'audio/';
+                else if (entry.initiatorType === 'img') k = 'image/';
+                pushItem(entry.name, k);
+              }
+            });
+          }
+        } catch (e) {}
+        const scanDoc = (doc) => {
+          if (!doc) return;
+          doc.querySelectorAll('video, audio').forEach(el => {
+            const kind = el.tagName.toLowerCase() === 'audio' ? 'audio/' : 'video/';
+            if (el.currentSrc) pushItem(el.currentSrc, kind);
+            if (el.src) pushItem(el.src, kind);
+            if (el.poster) pushItem(el.poster, 'image/');
+            el.querySelectorAll('source').forEach(s => { if (s.src) pushItem(s.src, kind); });
+          });
+          doc.querySelectorAll('img').forEach(img => {
+            const u = img.currentSrc || img.src;
+            if (u) pushItem(u, 'image/');
+          });
+          doc.querySelectorAll('picture source, link[rel="preload"]').forEach(el => {
+            if (el.src) pushItem(el.src, 'image/');
+            if (el.href) pushItem(el.href, 'other');
+            if (el.srcset) {
+              el.srcset.split(',').forEach(part => {
+                const u = part.trim().split(/\s+/)[0];
+                if (u) pushItem(u, 'image/');
+              });
+            }
+          });
+          doc.querySelectorAll('iframe').forEach(fr => {
+            try { if (fr.contentDocument) scanDoc(fr.contentDocument); } catch (e) {}
+          });
+          {
+            try {
+              const html = doc.documentElement ? doc.documentElement.innerHTML : '';
+              const urlRe = /https?:\\?\/\\?\/[^\s"'<>\\]+\.(m3u8|mpd|mp4|webm|flv|mp3|m4a)(\?[^\s"'<>\\]*)?/gi;
+              let m;
+              let limit = 0;
+              while ((m = urlRe.exec(html)) !== null && limit < 60) {
+                pushItem(m[0].replace(/\\\//g, '/'), 'video/');
+                limit++;
+              }
+            } catch (e) {}
+            doc.querySelectorAll('svg image').forEach(si => {
+              const href = si.getAttribute('href') || si.getAttribute('xlink:href');
+              if (href) pushItem(href, 'image/');
+            });
+            const scanStyleObj = (st) => {
+              if (!st) return;
+              [st.backgroundImage, st.maskImage, st.webkitMaskImage, st.borderImageSource, st.listStyleImage, st.content].forEach(val => {
+                if (val && val.includes('url(')) extractCssUrls(val, 'image/');
+              });
+            };
+            const allEls = doc.querySelectorAll('*');
+            for (let idx = 0; idx < allEls.length && items.length < 450; ++idx) {
+              const el = allEls[idx];
+              try {
+                scanStyleObj(getComputedStyle(el));
+                scanStyleObj(getComputedStyle(el, '::before'));
+                scanStyleObj(getComputedStyle(el, '::after'));
+                const inlineStyle = el.getAttribute && el.getAttribute('style');
+                if (inlineStyle && inlineStyle.includes('url(')) extractCssUrls(inlineStyle, 'image/');
+                if (el.shadowRoot) scanDoc(el.shadowRoot);
+              } catch (e) {}
+            }
+          }
+        };
+        scanDoc(document);
+        if (items.length > 0 && window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.wb_sniffed_resources) {
+          window.webkit.messageHandlers.wb_sniffed_resources.postMessage(JSON.stringify({
+            pageUrl: location.href,
+            items: items.slice(0, 450)
+          }));
+        }
+      } catch (e) {}
+    })();)JS";
+    webkit_web_view_evaluate_javascript(view, js, -1, nullptr, nullptr, nullptr, context_menu_run_js_finished, nullptr);
+}
+
+void rebuild_sniffer_popover_ui() {
+    if (!sniffer_popover_listbox || !GTK_IS_LIST_BOX(sniffer_popover_listbox)) return;
+    GList* children = gtk_container_get_children(GTK_CONTAINER(sniffer_popover_listbox));
+    for (GList* l = children; l != nullptr; l = l->next) {
+        gtk_widget_destroy(GTK_WIDGET(l->data));
+    }
+    g_list_free(children);
+
+    GtkWidget* cur_wv = get_current_webview();
+    auto* list = cur_wv ? get_webview_sniffed_list(WEBKIT_WEB_VIEW(cur_wv), false) : nullptr;
+    if (!list || list->empty()) {
+        GtkWidget* empty_row = gtk_list_box_row_new();
+        gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(empty_row), FALSE);
+        gtk_list_box_row_set_selectable(GTK_LIST_BOX_ROW(empty_row), FALSE);
+        GtkWidget* lbl = gtk_label_new(tr_full("当前页面暂未嗅探到媒体资源", "目前頁面暫未嗅探到媒體資源", "No media resources detected on this page"));
+        gtk_container_set_border_width(GTK_CONTAINER(lbl), 18);
+        gtk_container_add(GTK_CONTAINER(empty_row), lbl);
+        gtk_widget_show_all(empty_row);
+        gtk_list_box_insert(GTK_LIST_BOX(sniffer_popover_listbox), empty_row, -1);
+        return;
+    }
+
+    for (int i = (int)list->size() - 1; i >= 0; --i) {
+        const auto& res = (*list)[i];
+        GtkWidget* row = gtk_list_box_row_new();
+        gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), FALSE);
+        gtk_list_box_row_set_selectable(GTK_LIST_BOX_ROW(row), FALSE);
+
+        GtkWidget* hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+        gtk_container_set_border_width(GTK_CONTAINER(hbox), 4);
+
+        const char* tag = tr_full("[资源]", "[資源]", "[Res]");
+        if (res.category == "video") tag = tr_full("[视频]", "[影片]", "[Video]");
+        else if (res.category == "audio") tag = tr_full("[音频]", "[音訊]", "[Audio]");
+        else if (res.category == "stream") tag = tr_full("[流媒体]", "[串流]", "[Stream]");
+        else if (res.category == "image") tag = tr_full("[图片]", "[圖片]", "[Image]");
+
+        std::string fname = extract_filename_from_url(res.url);
+        if (fname.empty()) fname = res.url;
+        std::string meta = std::string(tag) + " " + fname;
+        if (!res.mime.empty() || res.size > 0) {
+            meta += " (";
+            if (!res.mime.empty()) meta += res.mime;
+            if (res.size > 0) {
+                if (!res.mime.empty()) meta += ", ";
+                meta += format_bytes(res.size);
+            }
+            meta += ")";
+        }
+
+        GtkWidget* lbl = gtk_label_new(meta.c_str());
+        gtk_label_set_xalign(GTK_LABEL(lbl), 0.0f);
+        gtk_label_set_ellipsize(GTK_LABEL(lbl), PANGO_ELLIPSIZE_END);
+        gtk_label_set_max_width_chars(GTK_LABEL(lbl), 28);
+        gtk_widget_set_tooltip_text(lbl, res.url.c_str());
+        gtk_box_pack_start(GTK_BOX(hbox), lbl, TRUE, TRUE, 0);
+
+        GtkWidget* dl_btn = gtk_button_new();
+        gtk_container_add(GTK_CONTAINER(dl_btn), create_vector_icon(ICON_DOWNLOAD, 14));
+        gtk_button_set_relief(GTK_BUTTON(dl_btn), GTK_RELIEF_NONE);
+        gtk_widget_set_can_focus(dl_btn, FALSE);
+        gtk_style_context_add_class(gtk_widget_get_style_context(dl_btn), "flat");
+        gtk_widget_set_tooltip_text(dl_btn, tr_full("下载此资源", "下載此資源", "Download resource"));
+
+        std::string* dl_url_copy = new std::string(res.url);
+        g_signal_connect_data(dl_btn, "clicked", G_CALLBACK(+[](GtkWidget*, gpointer data) {
+            std::string* u = static_cast<std::string*>(data);
+            if (sniffer_popover) gtk_widget_hide(sniffer_popover);
+            if (!u || u->empty()) return;
+            GtkWidget* wv = get_current_webview();
+            if (!wv) return;
+            if (u->rfind("blob:", 0) == 0) {
+                std::string js =
+                    "(()=>{"
+                    "fetch(\"" + json_escape_str(*u) + "\").then(r=>r.blob()).then(b=>{"
+                    "const fr=new FileReader();"
+                    "fr.onloadend=()=>{try{window.webkit.messageHandlers.wb_save_data_url.postMessage(String(fr.result||''));}catch(e){}};"
+                    "fr.readAsDataURL(b);"
+                    "}).catch(()=>{});"
+                    "})();";
+                webkit_web_view_evaluate_javascript(WEBKIT_WEB_VIEW(wv), js.c_str(), -1,
+                    nullptr, nullptr, nullptr, context_menu_run_js_finished, nullptr);
+            } else {
+                WebKitDownload* dl = webkit_web_view_download_uri(WEBKIT_WEB_VIEW(wv), u->c_str());
+                if (dl) g_object_unref(dl);
+            }
+        }), dl_url_copy, +[](gpointer data, GClosure*) {
+            delete static_cast<std::string*>(data);
+        }, (GConnectFlags)0);
+        gtk_box_pack_start(GTK_BOX(hbox), dl_btn, FALSE, FALSE, 0);
+
+        GtkWidget* cp_btn = gtk_button_new();
+        gtk_container_add(GTK_CONTAINER(cp_btn), create_vector_icon(ICON_COPY, 14));
+        gtk_button_set_relief(GTK_BUTTON(cp_btn), GTK_RELIEF_NONE);
+        gtk_widget_set_can_focus(cp_btn, FALSE);
+        gtk_style_context_add_class(gtk_widget_get_style_context(cp_btn), "flat");
+        std::string* cp_url_copy = new std::string(res.url);
+        g_signal_connect_data(cp_btn, "clicked", G_CALLBACK(+[](GtkWidget*, gpointer data) {
+            std::string* u = static_cast<std::string*>(data);
+            if (u && !u->empty()) {
+                GtkClipboard* cb = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+                gtk_clipboard_set_text(cb, u->c_str(), (gint)u->size());
+                update_status_text(tr_full("已复制资源地址", "已複製資源位址", "Resource URL copied"), TRUE);
+            }
+        }), cp_url_copy, +[](gpointer data, GClosure*) {
+            delete static_cast<std::string*>(data);
+        }, (GConnectFlags)0);
+        gtk_box_pack_start(GTK_BOX(hbox), cp_btn, FALSE, FALSE, 0);
+
+        GtkWidget* view_btn = gtk_button_new();
+        gtk_container_add(GTK_CONTAINER(view_btn), create_vector_icon(ICON_GLOBE, 14));
+        gtk_button_set_relief(GTK_BUTTON(view_btn), GTK_RELIEF_NONE);
+        gtk_widget_set_can_focus(view_btn, FALSE);
+        gtk_style_context_add_class(gtk_widget_get_style_context(view_btn), "flat");
+        std::string* view_url_copy = new std::string(res.url);
+        g_signal_connect_data(view_btn, "clicked", G_CALLBACK(+[](GtkWidget*, gpointer data) {
+            std::string* u = static_cast<std::string*>(data);
+            if (sniffer_popover) gtk_widget_hide(sniffer_popover);
+            if (u && !u->empty()) add_tab(u->c_str());
+        }), view_url_copy, +[](gpointer data, GClosure*) {
+            delete static_cast<std::string*>(data);
+        }, (GConnectFlags)0);
+        gtk_box_pack_start(GTK_BOX(hbox), view_btn, FALSE, FALSE, 0);
+
+        gtk_container_add(GTK_CONTAINER(row), hbox);
+        gtk_widget_show_all(row);
+        gtk_list_box_insert(GTK_LIST_BOX(sniffer_popover_listbox), row, -1);
+    }
+}
+
 void rebuild_history_popover_ui() {
     if (!hist_popover_listbox || !GTK_IS_LIST_BOX(hist_popover_listbox)) return;
     GList* children = gtk_container_get_children(GTK_CONTAINER(hist_popover_listbox));
@@ -1376,10 +2081,8 @@ void rebuild_history_popover_ui() {
     }
 }
 
-int record_selected_column(GtkTreeModel* model) {
-    const int count = gtk_tree_model_get_n_columns(model);
-    if (count == 4) return 2; // Cookies
-    return REC_SELECTED;      // 历史记录与收藏
+int record_selected_column(GtkTreeModel*) {
+    return REC_SELECTED;
 }
 
 void on_record_toggle(GtkCellRendererToggle* renderer, gchar* path_str, gpointer data) {
@@ -1533,9 +2236,6 @@ void on_record_copy_selected(GtkWidget*, gpointer) {
                 if (pref_current_row == 4 || pref_current_row == 5) {
                     gtk_tree_model_get(GTK_TREE_MODEL(store), &iter, REC_TEXT, &a, REC_URL, &b, REC_TIME, &c, -1);
                     copied += (a ? a : "") + std::string("\t") + (b ? b : "") + "\t" + (c ? c : "") + "\n";
-                } else {
-                    gtk_tree_model_get(GTK_TREE_MODEL(store), &iter, 0, &a, -1);
-                    copied += std::string(a ? a : "") + "\n";
                 }
                 g_free(a); g_free(b); g_free(c);
             }
@@ -1704,6 +2404,7 @@ enum class ContextActionType {
     OpenInNewTab,
     OpenInCurrentTab,
     DownloadUri,
+    SaveImage,
     CopyUri,
     PageBack,
     PageForward,
@@ -1818,8 +2519,35 @@ static void on_unified_menu_item_activate(GtkMenuItem*, gpointer user_data) {
                 break;
             case ContextActionType::DownloadUri:
                 if (!d->uri_arg.empty()) {
-                    WebKitDownload* dl = webkit_web_view_download_uri(webview, d->uri_arg.c_str());
-                    if (dl) g_object_unref(dl);
+                    if (d->uri_arg.rfind("data:image/", 0) == 0) {
+                        save_data_image_uri(d->uri_arg);
+                    } else {
+                        WebKitDownload* dl = webkit_web_view_download_uri(webview, d->uri_arg.c_str());
+                        if (dl) g_object_unref(dl);
+                    }
+                }
+                break;
+            case ContextActionType::SaveImage:
+                if (!d->uri_arg.empty()) {
+                    if (d->uri_arg.rfind("data:", 0) == 0) {
+                        save_data_image_uri(d->uri_arg);
+                    } else if (d->uri_arg.rfind("blob:", 0) == 0) {
+                        std::string js =
+                            "(()=>{"
+                            "fetch(\"" + json_escape_str(d->uri_arg) + "\").then(r=>r.blob()).then(b=>{"
+                            "const fr=new FileReader();"
+                            "fr.onloadend=()=>{try{window.webkit.messageHandlers.wb_save_data_url.postMessage(String(fr.result||''));}catch(e){}};"
+                            "fr.readAsDataURL(b);"
+                            "}).catch(()=>{});"
+                            "})();";
+                        webkit_web_view_evaluate_javascript(webview, js.c_str(), -1,
+                            nullptr, nullptr, nullptr, context_menu_run_js_finished, nullptr);
+                    } else {
+                        next_download_expects_image = true;
+                        WebKitDownload* dl = webkit_web_view_download_uri(webview, d->uri_arg.c_str());
+                        next_download_expects_image = false;
+                        if (dl) g_object_unref(dl);
+                    }
                 }
                 break;
             case ContextActionType::CopyUri:
@@ -1909,10 +2637,8 @@ static void populate_unified_context_menu(
     bool added_section = false;
     const gchar* link_uri = hit ? webkit_hit_test_result_get_link_uri(hit) : nullptr;
     const gchar* image_uri = hit ? webkit_hit_test_result_get_image_uri(hit) : nullptr;
-    const gchar* media_uri = hit ? webkit_hit_test_result_get_media_uri(hit) : nullptr;
     const gboolean is_link = hit && (webkit_hit_test_result_context_is_link(hit) || (link_uri && *link_uri));
     const gboolean is_image = hit && (webkit_hit_test_result_context_is_image(hit) || (image_uri && *image_uri));
-    const gboolean is_media = hit && (webkit_hit_test_result_context_is_media(hit) || (media_uri && *media_uri));
     const gboolean is_editable = hit && webkit_hit_test_result_context_is_editable(hit);
     const gboolean is_selection = hit && webkit_hit_test_result_context_is_selection(hit);
 
@@ -1926,16 +2652,8 @@ static void populate_unified_context_menu(
         if (added_section) gtk_menu_shell_append(menu_shell, gtk_separator_menu_item_new());
         append_action_item("在新标签页中查看图片", "在新分頁中檢視圖片", "Open image in new tab", TRUE, ContextActionType::OpenInNewTab, image_uri);
         append_action_item("查看图片", "檢視圖片", "View image", TRUE, ContextActionType::OpenInCurrentTab, image_uri);
-        append_action_item("保存图片...", "儲存圖片...", "Save image as...", TRUE, ContextActionType::DownloadUri, image_uri);
+        append_action_item("保存图片...", "儲存圖片...", "Save image as...", TRUE, ContextActionType::SaveImage, image_uri);
         append_action_item("复制图片地址", "複製圖片位址", "Copy image address", TRUE, ContextActionType::CopyUri, image_uri);
-        added_section = true;
-    }
-    if (is_media && media_uri && *media_uri) {
-        if (added_section) gtk_menu_shell_append(menu_shell, gtk_separator_menu_item_new());
-        append_action_item("在新标签页中打开视频/媒体", "在新分頁中開啟影片/媒體", "Open media in new tab", TRUE, ContextActionType::OpenInNewTab, media_uri);
-        append_action_item("查看视频/媒体", "檢視影片/媒體", "View media", TRUE, ContextActionType::OpenInCurrentTab, media_uri);
-        append_action_item("保存视频/媒体...", "儲存影片/媒體...", "Save media as...", TRUE, ContextActionType::DownloadUri, media_uri);
-        append_action_item("复制媒体地址", "複製媒體位址", "Copy media address", TRUE, ContextActionType::CopyUri, media_uri);
         added_section = true;
     }
 
@@ -1978,6 +2696,18 @@ static void populate_unified_context_menu(
     }
     append_action_item("全选", "全選", "Select all", TRUE, ContextActionType::SelectAll);
     append_action_item("搜索选中文本", "搜尋選取文字", "Search selected text", is_selection, ContextActionType::SearchSelected);
+    if (developer_extras_enabled) {
+        gtk_menu_shell_append(menu_shell, gtk_separator_menu_item_new());
+        GtkWidget* insp_item = gtk_menu_item_new_with_label(tr_full("检查元素", "檢查元素", "Inspect Element"));
+        g_signal_connect(insp_item, "activate", G_CALLBACK(+[](GtkMenuItem*, gpointer data) {
+            WebKitWebView* wv = WEBKIT_WEB_VIEW(data);
+            if (wv && WEBKIT_IS_WEB_VIEW(wv)) {
+                WebKitWebInspector* insp = webkit_web_view_get_inspector(wv);
+                if (insp) webkit_web_inspector_show(insp);
+            }
+        }), webview);
+        gtk_menu_shell_append(menu_shell, insp_item);
+    }
 }
 
 void on_url_entry_populate_popup(GtkEntry* entry, GtkWidget* popup, gpointer) {
@@ -1993,11 +2723,58 @@ void on_url_entry_populate_popup(GtkEntry* entry, GtkWidget* popup, gpointer) {
     gtk_widget_show_all(popup);
 }
 
+void on_textview_populate_popup(GtkTextView* tv, GtkWidget* popup, gpointer) {
+    if (!tv || !GTK_IS_TEXT_VIEW(tv) || !popup || !GTK_IS_MENU_SHELL(popup)) return;
+    GList* children = gtk_container_get_children(GTK_CONTAINER(popup));
+    for (GList* l = children; l != nullptr; l = l->next) {
+        gtk_widget_destroy(GTK_WIDGET(l->data));
+    }
+    g_list_free(children);
+
+    GtkTextBuffer* buf = gtk_text_view_get_buffer(tv);
+    GtkTextIter s, e;
+    const gboolean has_sel = buf && gtk_text_buffer_get_selection_bounds(buf, &s, &e);
+    const gboolean has_text = buf && gtk_text_buffer_get_char_count(buf) > 0;
+
+    auto add_tv_item = [&](const char* zh, const char* zhtw, const char* en, gboolean sens, int op) {
+        GtkWidget* item = gtk_menu_item_new_with_label(tr_full(zh, zhtw, en));
+        gtk_widget_set_sensitive(item, sens);
+        g_object_set_data(G_OBJECT(item), "wb_tv_op", GINT_TO_POINTER(op));
+        g_signal_connect(item, "activate", G_CALLBACK(+[](GtkMenuItem* mi, gpointer data) {
+            GtkTextView* view = GTK_TEXT_VIEW(data);
+            if (!view || !GTK_IS_TEXT_VIEW(view)) return;
+            GtkTextBuffer* b = gtk_text_view_get_buffer(view);
+            GtkClipboard* cb = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+            int code = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(mi), "wb_tv_op"));
+            if (code == 1) gtk_text_buffer_cut_clipboard(b, cb, TRUE);
+            else if (code == 2) gtk_text_buffer_copy_clipboard(b, cb);
+            else if (code == 3) gtk_text_buffer_paste_clipboard(b, cb, NULL, TRUE);
+            else if (code == 4) gtk_text_buffer_delete_selection(b, TRUE, TRUE);
+            else if (code == 5) {
+                GtkTextIter st;
+                GtkTextIter en_it;
+                gtk_text_buffer_get_bounds(b, &st, &en_it);
+                gtk_text_buffer_select_range(b, &st, &en_it);
+            }
+        }), tv);
+        gtk_menu_shell_append(GTK_MENU_SHELL(popup), item);
+    };
+
+    add_tv_item("剪切", "剪下", "Cut", has_sel, 1);
+    add_tv_item("复制", "複製", "Copy", has_sel, 2);
+    add_tv_item("粘贴", "貼上", "Paste", TRUE, 3);
+    add_tv_item("删除", "刪除", "Delete", has_sel, 4);
+    gtk_menu_shell_append(GTK_MENU_SHELL(popup), gtk_separator_menu_item_new());
+    add_tv_item("全选", "全選", "Select all", has_text, 5);
+    gtk_widget_show_all(popup);
+}
+
 void on_load_changed(WebKitWebView* web_view, WebKitLoadEvent load_event, gpointer user_data) {
     gboolean is_foreground = (GTK_WIDGET(web_view) == get_current_webview());
     if (is_foreground) update_navigation_state();
 
     if (load_event == WEBKIT_LOAD_STARTED) {
+        clear_webview_sniffed_list(web_view);
         g_object_set_data(G_OBJECT(web_view), "wb_load_committed", GINT_TO_POINTER(0));
         set_webview_visually_finished(web_view, false);
         set_webview_max_progress(web_view, 0.12);
@@ -2022,6 +2799,7 @@ void on_load_changed(WebKitWebView* web_view, WebKitLoadEvent load_event, gpoint
         set_webview_visually_finished(web_view, true);
         set_webview_max_progress(web_view, 1.0);
         run_selection_toolbar_script(web_view);
+        run_dom_sniffer_script(web_view);
         if (is_foreground) {
             gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(progress_bar), 1.0);
             g_timeout_add(220, hide_progress_if_idle, NULL);
@@ -2152,6 +2930,24 @@ gboolean on_load_failed(WebKitWebView* web_view, WebKitLoadEvent load_event, con
     return TRUE;
 }
 
+static gboolean delayed_recover_web_view(gpointer data) {
+    WebKitWebView* web_view = WEBKIT_WEB_VIEW(data);
+    if (web_view && WEBKIT_IS_WEB_VIEW(web_view)) {
+        const gchar* uri = webkit_web_view_get_uri(web_view);
+        if (uri && *uri) {
+            webkit_web_view_load_uri(web_view, uri);
+        } else {
+            webkit_web_view_reload(web_view);
+        }
+    }
+    return G_SOURCE_REMOVE;
+}
+
+void on_web_process_terminated(WebKitWebView* web_view, WebKitWebProcessTerminationReason reason, gpointer) {
+    if (!web_view || reason == WEBKIT_WEB_PROCESS_TERMINATED_BY_API) return;
+    g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, delayed_recover_web_view, g_object_ref(web_view), g_object_unref);
+}
+
 void on_url_activate(GtkWidget* widget, gpointer data) {
     if (!url_entry || !GTK_IS_ENTRY(url_entry)) return;
     std::string raw = trim_whitespace(gtk_entry_get_text(GTK_ENTRY(url_entry)));
@@ -2239,6 +3035,15 @@ void apply_web_settings_to_all_tabs(bool reload_for_lang) {
             WebKitSettings* settings = webkit_web_view_get_settings(WEBKIT_WEB_VIEW(view));
             webkit_settings_set_enable_javascript(settings, javascript_enabled);
             webkit_settings_set_enable_webgl(settings, webgl_enabled);
+            webkit_settings_set_enable_smooth_scrolling(settings, smooth_scrolling_enabled);
+            webkit_settings_set_auto_load_images(settings, auto_load_images);
+            webkit_settings_set_enable_dns_prefetching(settings, dns_prefetch_enabled);
+    webkit_settings_set_enable_page_cache(settings, page_cache_enabled);
+    webkit_settings_set_enable_webaudio(settings, webaudio_enabled);
+    webkit_settings_set_enable_developer_extras(settings, developer_extras_enabled);
+            webkit_settings_set_enable_page_cache(settings, page_cache_enabled);
+            webkit_settings_set_enable_webaudio(settings, webaudio_enabled);
+            webkit_settings_set_enable_developer_extras(settings, developer_extras_enabled);
             webkit_settings_set_media_playback_requires_user_gesture(settings, media_requires_gesture);
             if (reload_for_lang) webkit_web_view_reload(WEBKIT_WEB_VIEW(view));
         }
@@ -2354,7 +3159,7 @@ void close_tab_at_index(int page_idx) {
     }
 }
 
-void sync_tab_bar() {
+void sync_tab_bar(int explicit_current) {
     if (!tab_bar_box || !notebook || !GTK_IS_NOTEBOOK(notebook)) return;
     GList* children = gtk_container_get_children(GTK_CONTAINER(tab_bar_box));
     for (GList* l = children; l != nullptr; l = l->next) {
@@ -2363,7 +3168,7 @@ void sync_tab_bar() {
     g_list_free(children);
 
     const int n_pages = gtk_notebook_get_n_pages(GTK_NOTEBOOK(notebook));
-    const int current_page = gtk_notebook_get_current_page(GTK_NOTEBOOK(notebook));
+    const int current_page = (explicit_current >= 0) ? explicit_current : gtk_notebook_get_current_page(GTK_NOTEBOOK(notebook));
 
     for (int i = 0; i < n_pages; ++i) {
         GtkWidget* page = gtk_notebook_get_nth_page(GTK_NOTEBOOK(notebook), i);
@@ -2475,14 +3280,19 @@ void add_tab(const char* url) {
     webkit_settings_set_media_playback_requires_user_gesture(settings, media_requires_gesture);
     webkit_settings_set_enable_javascript(settings, javascript_enabled);
     webkit_settings_set_enable_webgl(settings, webgl_enabled);
+    webkit_settings_set_enable_smooth_scrolling(settings, smooth_scrolling_enabled);
+    webkit_settings_set_auto_load_images(settings, auto_load_images);
+    webkit_settings_set_enable_dns_prefetching(settings, dns_prefetch_enabled);
     webkit_settings_set_enable_write_console_messages_to_stdout(settings, FALSE);
 
     g_signal_connect(webview, "load-changed", G_CALLBACK(on_load_changed), NULL);
     g_signal_connect(webview, "load-failed", G_CALLBACK(on_load_failed), NULL);
+    g_signal_connect(webview, "web-process-terminated", G_CALLBACK(on_web_process_terminated), NULL);
     g_signal_connect(webview, "notify::estimated-load-progress", G_CALLBACK(on_progress_changed), NULL);
     g_signal_connect(webview, "notify::is-loading", G_CALLBACK(on_is_loading_changed), NULL);
     g_signal_connect(webview, "decide-policy", G_CALLBACK(on_decide_policy), NULL);
     g_signal_connect(webview, "context-menu", G_CALLBACK(on_webview_context_menu), NULL);
+    g_signal_connect(webview, "resource-load-started", G_CALLBACK(on_webview_resource_load_started), NULL);
 
     g_signal_connect(webview, "notify::title", G_CALLBACK(+[](GtkWidget*, GParamSpec*, gpointer){
         sync_tab_bar();
@@ -2536,6 +3346,7 @@ void update_pref_action_bars_visibility() {
             double val = gtk_range_get_value(GTK_RANGE(pref_zoom_scale));
             if (std::lround(val) != std::lround(page_zoom_percent)) dirty = true;
         }
+        if (pref_download_dir_entry && trim_whitespace(gtk_entry_get_text(GTK_ENTRY(pref_download_dir_entry))) != download_dir) dirty = true;
         gtk_widget_set_visible(pref_gen_action_bar, dirty);
     }
     if (pref_srch_action_bar) {
@@ -2562,6 +3373,13 @@ void update_pref_action_bars_visibility() {
         bool dirty = false;
         if (pref_js_check && gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(pref_js_check)) != javascript_enabled) dirty = true;
         if (pref_webgl_check && gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(pref_webgl_check)) != webgl_enabled) dirty = true;
+        if (pref_smooth_scroll_check && gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(pref_smooth_scroll_check)) != smooth_scrolling_enabled) dirty = true;
+        if (pref_auto_images_check && gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(pref_auto_images_check)) != auto_load_images) dirty = true;
+        if (pref_dns_prefetch_check && gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(pref_dns_prefetch_check)) != dns_prefetch_enabled) dirty = true;
+        if (pref_page_cache_check && gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(pref_page_cache_check)) != page_cache_enabled) dirty = true;
+        if (pref_webaudio_check && gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(pref_webaudio_check)) != webaudio_enabled) dirty = true;
+        if (pref_inspector_check && gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(pref_inspector_check)) != developer_extras_enabled) dirty = true;
+        if (pref_sniffer_check && gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(pref_sniffer_check)) != resource_sniffer_enabled) dirty = true;
         gtk_widget_set_visible(pref_dev_action_bar, dirty);
     }
 }
@@ -2571,7 +3389,12 @@ void reset_all_pref_drafts() {
     if (pref_theme_combo) gtk_combo_box_set_active_id(GTK_COMBO_BOX(pref_theme_combo), ui_theme.c_str());
     if (pref_lang_combo) gtk_combo_box_set_active_id(GTK_COMBO_BOX(pref_lang_combo), ui_language.c_str());
     if (pref_zoom_scale) gtk_range_set_value(GTK_RANGE(pref_zoom_scale), page_zoom_percent);
-    if (pref_search_combo) gtk_combo_box_set_active_id(GTK_COMBO_BOX(pref_search_combo), search_engine.c_str());
+    if (pref_download_dir_entry) gtk_entry_set_text(GTK_ENTRY(pref_download_dir_entry), download_dir.c_str());
+    if (pref_search_combo) {
+        if (!gtk_combo_box_set_active_id(GTK_COMBO_BOX(pref_search_combo), search_engine.c_str())) {
+            gtk_combo_box_set_active_id(GTK_COMBO_BOX(pref_search_combo), "google");
+        }
+    }
     if (pref_cookie_combo) gtk_combo_box_set_active_id(GTK_COMBO_BOX(pref_cookie_combo), cookie_policy.c_str());
     if (pref_media_check) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(pref_media_check), media_requires_gesture);
     if (pref_tls_check) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(pref_tls_check), ignore_tls_errors);
@@ -2579,6 +3402,13 @@ void reset_all_pref_drafts() {
     if (pref_ad_buf) gtk_text_buffer_set_text(pref_ad_buf, adblock_rules_text.c_str(), -1);
     if (pref_js_check) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(pref_js_check), javascript_enabled);
     if (pref_webgl_check) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(pref_webgl_check), webgl_enabled);
+    if (pref_smooth_scroll_check) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(pref_smooth_scroll_check), smooth_scrolling_enabled);
+    if (pref_auto_images_check) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(pref_auto_images_check), auto_load_images);
+    if (pref_dns_prefetch_check) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(pref_dns_prefetch_check), dns_prefetch_enabled);
+    if (pref_page_cache_check) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(pref_page_cache_check), page_cache_enabled);
+    if (pref_webaudio_check) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(pref_webaudio_check), webaudio_enabled);
+    if (pref_inspector_check) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(pref_inspector_check), developer_extras_enabled);
+    if (pref_sniffer_check) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(pref_sniffer_check), resource_sniffer_enabled);
     pref_syncing_ui = false;
     update_pref_action_bars_visibility();
 }
@@ -2614,8 +3444,8 @@ void on_switch_page(GtkNotebook* nb, GtkWidget* page, guint page_num, gpointer d
         if (url_entry && GTK_IS_ENTRY(url_entry)) gtk_entry_set_text(GTK_ENTRY(url_entry), get_current_preferences_url());
         if (progress_bar) gtk_widget_hide(progress_bar);
         if (status_overlay) gtk_widget_hide(status_overlay);
-        sync_tab_bar();
-        update_navigation_state();
+        sync_tab_bar((int)page_num);
+        update_navigation_state(page);
         return;
     }
 
@@ -2638,8 +3468,8 @@ void on_switch_page(GtkNotebook* nb, GtkWidget* page, guint page_num, gpointer d
             if (status_overlay) gtk_widget_hide(status_overlay);
         }
     }
-    sync_tab_bar();
-    update_navigation_state();
+    sync_tab_bar((int)page_num);
+    update_navigation_state(page);
 }
 
 void on_back(GtkWidget* w, gpointer d) {
@@ -2697,6 +3527,92 @@ void on_refresh(GtkWidget* w, gpointer d) {
     webkit_web_view_reload(WEBKIT_WEB_VIEW(wv));
 }
 
+void rebuild_search_engines_ui() {
+    if (pref_search_combo && GTK_IS_COMBO_BOX_TEXT(pref_search_combo)) {
+        pref_syncing_ui = true;
+        gtk_combo_box_text_remove_all(GTK_COMBO_BOX_TEXT(pref_search_combo));
+        gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(pref_search_combo), "google", tr_full("谷歌 (Google)", "Google", "Google"));
+        gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(pref_search_combo), "bing", tr_full("必应 (Bing)", "Bing", "Bing"));
+        for (const auto& ce : custom_search_engines) {
+            gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(pref_search_combo), ce.id.c_str(), ce.name.c_str());
+        }
+        if (!gtk_combo_box_set_active_id(GTK_COMBO_BOX(pref_search_combo), search_engine.c_str())) {
+            search_engine = "google";
+            gtk_combo_box_set_active_id(GTK_COMBO_BOX(pref_search_combo), "google");
+        }
+        pref_syncing_ui = false;
+        update_pref_action_bars_visibility();
+    }
+
+    if (!pref_search_list_box || !GTK_IS_BOX(pref_search_list_box)) return;
+    GList* children = gtk_container_get_children(GTK_CONTAINER(pref_search_list_box));
+    for (GList* l = children; l != nullptr; l = l->next) {
+        gtk_widget_destroy(GTK_WIDGET(l->data));
+    }
+    g_list_free(children);
+
+    auto add_engine_row = [&](const std::string& id, const std::string& name, const std::string& url, bool removable) {
+        GtkWidget* row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
+        gtk_widget_set_margin_top(row, 4);
+        gtk_widget_set_margin_bottom(row, 4);
+
+        GtkWidget* name_lbl = gtk_label_new(name.c_str());
+        gtk_label_set_xalign(GTK_LABEL(name_lbl), 0.0f);
+        gtk_widget_set_size_request(name_lbl, 130, -1);
+        gtk_label_set_ellipsize(GTK_LABEL(name_lbl), PANGO_ELLIPSIZE_END);
+        gtk_box_pack_start(GTK_BOX(row), name_lbl, FALSE, FALSE, 0);
+
+        GtkWidget* url_lbl = gtk_label_new(url.c_str());
+        gtk_label_set_xalign(GTK_LABEL(url_lbl), 0.0f);
+        gtk_label_set_ellipsize(GTK_LABEL(url_lbl), PANGO_ELLIPSIZE_END);
+        gtk_box_pack_start(GTK_BOX(row), url_lbl, TRUE, TRUE, 0);
+
+        if (removable) {
+            GtkWidget* del_btn = gtk_button_new();
+            gtk_container_add(GTK_CONTAINER(del_btn), create_vector_icon(ICON_CLOSE, 12));
+            gtk_button_set_relief(GTK_BUTTON(del_btn), GTK_RELIEF_NONE);
+            gtk_widget_set_can_focus(del_btn, FALSE);
+            gtk_style_context_add_class(gtk_widget_get_style_context(del_btn), "flat");
+            gtk_widget_set_tooltip_text(del_btn, tr_full("删除此搜索引擎", "刪除此搜尋引擎", "Remove search engine"));
+
+            std::string* id_copy = new std::string(id);
+            g_signal_connect_data(del_btn, "clicked", G_CALLBACK(+[](GtkWidget*, gpointer data) {
+                std::string* target_id = static_cast<std::string*>(data);
+                if (!target_id) return;
+                for (size_t i = 0; i < custom_search_engines.size(); ++i) {
+                    if (custom_search_engines[i].id == *target_id) {
+                        custom_search_engines.erase(custom_search_engines.begin() + i);
+                        break;
+                    }
+                }
+                save_custom_search_engines();
+                if (search_engine == *target_id) {
+                    search_engine = "google";
+                    save_settings();
+                    update_search_engine_in_all_tabs();
+                }
+                rebuild_search_engines_ui();
+                update_status_text(tr_full("已删除自定义搜索引擎", "已刪除自訂搜尋引擎", "Custom search engine removed"), TRUE);
+            }), id_copy, +[](gpointer data, GClosure*) {
+                delete static_cast<std::string*>(data);
+            }, (GConnectFlags)0);
+            gtk_box_pack_end(GTK_BOX(row), del_btn, FALSE, FALSE, 0);
+        } else {
+            GtkWidget* def_lbl = gtk_label_new(tr_full("默认", "預設", "Default"));
+            gtk_box_pack_end(GTK_BOX(row), def_lbl, FALSE, FALSE, 6);
+        }
+
+        gtk_box_pack_start(GTK_BOX(pref_search_list_box), row, FALSE, FALSE, 0);
+    };
+
+    add_engine_row("google", tr_full("谷歌 (Google)", "Google", "Google"), "https://www.google.com/search?q=", false);
+    add_engine_row("bing", tr_full("必应 (Bing)", "Bing", "Bing"), "https://www.bing.com/search?q=", false);
+    for (const auto& ce : custom_search_engines) {
+        add_engine_row(ce.id, ce.name, ce.search_url, true);
+    }
+    gtk_widget_show_all(pref_search_list_box);
+}
+
 // Firefox 风格内嵌设置子页面 (about:preferences)
 void open_preferences_tab(const char* section_name) {
     if (!notebook || !GTK_IS_NOTEBOOK(notebook)) return;
@@ -2705,7 +3621,7 @@ void open_preferences_tab(const char* section_name) {
         if (!sec) return 0;
         if (strcmp(sec, "search") == 0) return 1;
         if (strcmp(sec, "privacy") == 0) return 2;
-        if (strcmp(sec, "developer") == 0) return 3;
+        if (strcmp(sec, "developer") == 0 || strcmp(sec, "advanced") == 0 || strcmp(sec, "sniffer") == 0) return 3;
         if (strcmp(sec, "cookies") == 0) return 2;
         if (strcmp(sec, "history") == 0) return 4;
         if (strcmp(sec, "bookmarks") == 0) return 5;
@@ -2742,7 +3658,7 @@ void open_preferences_tab(const char* section_name) {
         tr_full("常规", "一般", "General"),
         tr_full("搜索", "搜尋", "Search"),
         tr_full("隐私与安全", "隱私與安全", "Privacy & Security"),
-        tr_full("高级与开发者", "進階與開發者", "Advanced & Developer"),
+        tr_full("高级", "進階", "Advanced"),
         tr_full("历史记录", "歷史記錄", "History"),
         tr_full("书签管理", "書籤管理", "Bookmarks"),
         tr_full("关于 WebBrowser", "關於 WebBrowser", "About WebBrowser")
@@ -2784,11 +3700,14 @@ void open_preferences_tab(const char* section_name) {
     gtk_box_pack_start(GTK_BOX(pref_data_toolbar), record_copy_button, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(right_container), pref_data_toolbar, FALSE, FALSE, 0);
 
-    GtkWidget* right_scroll = gtk_scrolled_window_new(NULL, NULL);
+    pref_right_scroll = gtk_scrolled_window_new(NULL, NULL);
+    GtkWidget* right_scroll = pref_right_scroll;
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(right_scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
     gtk_widget_set_hexpand(right_scroll, TRUE);
     gtk_widget_set_vexpand(right_scroll, TRUE);
     preferences_stack = gtk_stack_new();
+    gtk_stack_set_vhomogeneous(GTK_STACK(preferences_stack), FALSE);
+    gtk_stack_set_hhomogeneous(GTK_STACK(preferences_stack), FALSE);
     gtk_container_set_border_width(GTK_CONTAINER(preferences_stack), 20);
     gtk_container_add(GTK_CONTAINER(right_scroll), preferences_stack);
     gtk_box_pack_start(GTK_BOX(right_container), right_scroll, TRUE, TRUE, 0);
@@ -2857,8 +3776,168 @@ void open_preferences_tab(const char* section_name) {
     gtk_grid_attach(GTK_GRID(gen_grid), zoom_label, 0, 2, 1, 1);
     gtk_grid_attach(GTK_GRID(gen_grid), pref_zoom_scale, 1, 2, 1, 1);
 
+    GtkWidget* dl_dir_label = gtk_label_new(tr_full("下载目录", "下載目錄", "Download Folder"));
+    gtk_widget_set_halign(dl_dir_label, GTK_ALIGN_START);
+    GtkWidget* dl_dir_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    pref_download_dir_entry = gtk_entry_new();
+    gtk_widget_set_hexpand(pref_download_dir_entry, TRUE);
+    gtk_entry_set_text(GTK_ENTRY(pref_download_dir_entry), download_dir.c_str());
+    g_signal_connect(pref_download_dir_entry, "populate-popup", G_CALLBACK(on_url_entry_populate_popup), NULL);
+    g_signal_connect(pref_download_dir_entry, "changed", G_CALLBACK(+[](GtkEditable*, gpointer) {
+        if (!pref_syncing_ui) update_pref_action_bars_visibility();
+    }), NULL);
+    GtkWidget* dl_browse_btn = gtk_button_new_with_label(tr_full("浏览...", "瀏覽...", "Browse..."));
+    gtk_widget_set_can_focus(dl_browse_btn, FALSE);
+    g_signal_connect(dl_browse_btn, "clicked", G_CALLBACK(+[](GtkWidget*, gpointer) {
+        GtkWidget* dlg = gtk_file_chooser_dialog_new(
+            tr_full("选择下载目录", "選擇下載目錄", "Choose Download Folder"),
+            main_window ? GTK_WINDOW(main_window) : NULL,
+            GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER,
+            tr_full("取消", "取消", "Cancel"), GTK_RESPONSE_CANCEL,
+            tr_full("选择", "選擇", "Select"), GTK_RESPONSE_ACCEPT, NULL);
+        gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(dlg), download_dir.c_str());
+        if (gtk_dialog_run(GTK_DIALOG(dlg)) == GTK_RESPONSE_ACCEPT) {
+            gchar* folder = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dlg));
+            if (folder) {
+                if (pref_download_dir_entry) gtk_entry_set_text(GTK_ENTRY(pref_download_dir_entry), folder);
+                g_free(folder);
+            }
+        }
+        gtk_widget_destroy(dlg);
+    }), NULL);
+    gtk_box_pack_start(GTK_BOX(dl_dir_row), pref_download_dir_entry, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(dl_dir_row), dl_browse_btn, FALSE, FALSE, 0);
+    gtk_grid_attach(GTK_GRID(gen_grid), dl_dir_label, 0, 3, 1, 1);
+    gtk_grid_attach(GTK_GRID(gen_grid), dl_dir_row, 1, 3, 1, 1);
+
     gtk_box_pack_start(GTK_BOX(gen_card), gen_grid, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(gen_box), gen_card, FALSE, FALSE, 0);
+
+    // 备份与迁移卡片: 导出/导入用户数据
+    GtkWidget* backup_card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+    gtk_style_context_add_class(gtk_widget_get_style_context(backup_card), "fx-card");
+    GtkWidget* backup_hdr = gtk_label_new(tr_full("用户数据备份与恢复", "使用者資料備份與還原", "User Data Backup & Restore"));
+    gtk_style_context_add_class(gtk_widget_get_style_context(backup_hdr), "fx-section-title");
+    gtk_label_set_xalign(GTK_LABEL(backup_hdr), 0.0f);
+    GtkWidget* backup_desc = gtk_label_new(tr_full("导出内容：历史记录、书签、设置、自定义搜索引擎及广告拦截规则（保存至下载目录）。", "匯出內容：歷史記錄、書籤、設定、自訂搜尋引擎及廣告攔截規則（儲存至下載目錄）。", "Exports history, bookmarks, settings, custom search engines, and adblock rules to your download folder."));
+    gtk_label_set_xalign(GTK_LABEL(backup_desc), 0.0f);
+    gtk_label_set_line_wrap(GTK_LABEL(backup_desc), TRUE);
+    GtkWidget* backup_btns = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
+    GtkWidget* export_btn = gtk_button_new_with_label(tr_full("导出用户数据", "匯出使用者資料", "Export User Data"));
+    GtkWidget* import_btn = gtk_button_new_with_label(tr_full("导入用户数据...", "匯入使用者資料...", "Import User Data..."));
+    gtk_widget_set_can_focus(export_btn, FALSE);
+    gtk_widget_set_can_focus(import_btn, FALSE);
+
+    g_signal_connect(export_btn, "clicked", G_CALLBACK(+[](GtkWidget*, gpointer) {
+        ensure_dir_recursive(download_dir);
+        save_settings();
+        save_custom_search_engines();
+        time_t now = time(0);
+        struct tm* tm_info = localtime(&now);
+        char ts[32] = "backup";
+        if (tm_info) strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", tm_info);
+        std::string out_name = std::string("WebBrowser_data_") + ts + ".tar.gz";
+        std::string out_path = download_dir + (download_dir.back() == '/' ? "" : "/") + out_name;
+
+        std::vector<std::string> targets;
+        auto add_if_exists = [&](const std::string& rel) {
+            std::string full = base_dir + "/" + rel;
+            if (g_file_test(full.c_str(), G_FILE_TEST_EXISTS)) targets.push_back(rel);
+        };
+        add_if_exists("settings.conf");
+        add_if_exists("search_engines.txt");
+        add_if_exists("history/history.txt");
+        add_if_exists("bookmarks/bookmarks.txt");
+        add_if_exists("adblock/rules.txt");
+
+        if (targets.empty()) {
+            update_status_text(tr_full("没有可导出的用户数据", "沒有可匯出的使用者資料", "No user data to export"), TRUE);
+            return;
+        }
+        std::vector<const gchar*> argv;
+        argv.push_back("tar");
+        argv.push_back("-czf");
+        argv.push_back(out_path.c_str());
+        argv.push_back("-C");
+        argv.push_back(base_dir.c_str());
+        for (const auto& t : targets) argv.push_back(t.c_str());
+        argv.push_back(NULL);
+
+        gint exit_status = 1;
+        GError* err = nullptr;
+        gboolean ok = g_spawn_sync(NULL, (gchar**)argv.data(), NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL, &exit_status, &err);
+        if (err) g_error_free(err);
+        if (ok && exit_status == 0) {
+            update_status_text((std::string(tr_full("已导出: ", "已匯出: ", "Exported: ")) + out_name).c_str(), TRUE);
+        } else {
+            update_status_text(tr_full("导出失败", "匯出失敗", "Export failed"), TRUE);
+        }
+    }), NULL);
+
+    g_signal_connect(import_btn, "clicked", G_CALLBACK(+[](GtkWidget*, gpointer) {
+        GtkWidget* dlg = gtk_file_chooser_dialog_new(
+            tr_full("选择要导入的数据压缩包", "選擇要匯入的資料壓縮檔", "Select User Data Backup"),
+            main_window ? GTK_WINDOW(main_window) : NULL,
+            GTK_FILE_CHOOSER_ACTION_OPEN,
+            tr_full("取消", "取消", "Cancel"), GTK_RESPONSE_CANCEL,
+            tr_full("导入", "匯入", "Import"), GTK_RESPONSE_ACCEPT, NULL);
+        gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(dlg), download_dir.c_str());
+        GtkFileFilter* filter = gtk_file_filter_new();
+        gtk_file_filter_set_name(filter, "WebBrowser Backup (*.tar.gz, *.tgz)");
+        gtk_file_filter_add_pattern(filter, "*.tar.gz");
+        gtk_file_filter_add_pattern(filter, "*.tgz");
+        gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(dlg), filter);
+
+        if (gtk_dialog_run(GTK_DIALOG(dlg)) == GTK_RESPONSE_ACCEPT) {
+            gchar* filename = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dlg));
+            if (filename) {
+                std::vector<const gchar*> argv;
+                argv.push_back("tar");
+                argv.push_back("-xzf");
+                argv.push_back(filename);
+                argv.push_back("-C");
+                argv.push_back(base_dir.c_str());
+                argv.push_back(NULL);
+                gint exit_status = 1;
+                GError* err = nullptr;
+                gboolean ok = g_spawn_sync(NULL, (gchar**)argv.data(), NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL, &exit_status, &err);
+                if (err) g_error_free(err);
+                g_free(filename);
+
+                if (ok && exit_status == 0) {
+                    load_custom_search_engines();
+                    load_settings();
+                    read_records(history_file, history_list);
+                    read_records(bookmark_file, bookmark_list);
+                    load_adblock_rules();
+
+                    apply_app_theme();
+                    apply_ui_language();
+                    apply_privacy_and_security_policies();
+                    apply_adblock_rules();
+                    apply_sniffer_user_scripts();
+                    apply_web_settings_to_all_tabs(false);
+                    apply_zoom_to_all_tabs();
+                    if (btn_sniffer_menu) gtk_widget_set_visible(btn_sniffer_menu, resource_sniffer_enabled);
+                    refresh_history_ui();
+                    refresh_bookmark_ui();
+                    rebuild_search_engines_ui();
+                    reset_all_pref_drafts();
+                    update_status_text(tr_full("用户数据已导入并生效", "使用者資料已匯入並生效", "User data imported and applied"), TRUE);
+                } else {
+                    update_status_text(tr_full("导入失败，请检查压缩包格式", "匯入失敗，請檢查壓縮檔格式", "Import failed: invalid archive"), TRUE);
+                }
+            }
+        }
+        gtk_widget_destroy(dlg);
+    }), NULL);
+
+    gtk_box_pack_start(GTK_BOX(backup_btns), export_btn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(backup_btns), import_btn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(backup_card), backup_hdr, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(backup_card), backup_desc, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(backup_card), backup_btns, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(gen_box), backup_card, FALSE, FALSE, 0);
 
     pref_gen_action_bar = create_pref_action_bar(G_CALLBACK(+[](GtkWidget*, gpointer) {
         bool theme_changed = false;
@@ -2877,6 +3956,13 @@ void open_preferences_tab(const char* section_name) {
             if (std::lround(val) != std::lround(page_zoom_percent)) {
                 page_zoom_percent = val;
                 zoom_changed = true;
+            }
+        }
+        if (pref_download_dir_entry) {
+            std::string ndir = trim_whitespace(gtk_entry_get_text(GTK_ENTRY(pref_download_dir_entry)));
+            if (!ndir.empty()) {
+                download_dir = ndir;
+                ensure_dir_recursive(download_dir);
             }
         }
         save_settings();
@@ -2905,16 +3991,14 @@ void open_preferences_tab(const char* section_name) {
     GtkWidget* search_label = gtk_label_new(tr_full("默认搜索引擎", "預設搜尋引擎", "Default Search Engine"));
     gtk_widget_set_halign(search_label, GTK_ALIGN_START);
     pref_search_combo = gtk_combo_box_text_new();
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(pref_search_combo), "google", tr_full("谷歌 (Google)", "Google", "Google"));
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(pref_search_combo), "bing", tr_full("必应 (Bing)", "Bing", "Bing"));
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(pref_search_combo), "baidu", tr_full("百度 (Baidu)", "百度 (Baidu)", "Baidu"));
-    gtk_combo_box_set_active_id(GTK_COMBO_BOX(pref_search_combo), search_engine.c_str());
     g_signal_connect(pref_search_combo, "changed", G_CALLBACK(+[](GtkComboBox*, gpointer) {
         if (!pref_syncing_ui) update_pref_action_bars_visibility();
     }), NULL);
+
     gtk_box_pack_start(GTK_BOX(srch_row), search_label, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(srch_row), pref_search_combo, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(srch_card), srch_row, FALSE, FALSE, 0);
+
     GtkWidget* srch_desc = gtk_label_new(tr_full("地址栏搜索、新标签页与划词搜索将使用所选搜索引擎。", "網址列搜尋、新分頁與劃詞搜尋將使用所選搜尋引擎。", "Used for address bar searches, new tabs, and text selection search."));
     gtk_label_set_xalign(GTK_LABEL(srch_desc), 0.0f);
     gtk_label_set_line_wrap(GTK_LABEL(srch_desc), TRUE);
@@ -2922,18 +4006,115 @@ void open_preferences_tab(const char* section_name) {
     gtk_box_pack_start(GTK_BOX(srch_box), srch_card, FALSE, FALSE, 0);
 
     pref_srch_action_bar = create_pref_action_bar(G_CALLBACK(+[](GtkWidget*, gpointer) {
-        if (pref_search_combo) {
-            const gchar* id = gtk_combo_box_get_active_id(GTK_COMBO_BOX(pref_search_combo));
-            if (id) {
-                search_engine = id;
-                save_settings();
-                update_search_engine_in_all_tabs();
-            }
+        const gchar* id = pref_search_combo ? gtk_combo_box_get_active_id(GTK_COMBO_BOX(pref_search_combo)) : nullptr;
+        if (id) {
+            search_engine = id;
+            save_settings();
+            update_search_engine_in_all_tabs();
         }
         update_pref_action_bars_visibility();
         update_status_text(tr_full("搜索设置已应用", "搜尋設定已套用", "Search settings applied"), TRUE);
     }));
     gtk_box_pack_start(GTK_BOX(srch_box), pref_srch_action_bar, FALSE, FALSE, 0);
+
+    // 卡片 2: 管理与添加搜索引擎
+    GtkWidget* srch_mgr_card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+    gtk_style_context_add_class(gtk_widget_get_style_context(srch_mgr_card), "fx-card");
+    GtkWidget* srch_mgr_hdr = gtk_label_new(tr_full("管理搜索引擎", "管理搜尋引擎", "Manage Search Engines"));
+    gtk_style_context_add_class(gtk_widget_get_style_context(srch_mgr_hdr), "fx-section-title");
+    gtk_label_set_xalign(GTK_LABEL(srch_mgr_hdr), 0.0f);
+    gtk_box_pack_start(GTK_BOX(srch_mgr_card), srch_mgr_hdr, FALSE, FALSE, 0);
+
+    pref_search_list_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_box_pack_start(GTK_BOX(srch_mgr_card), pref_search_list_box, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(srch_mgr_card), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 4);
+
+    GtkWidget* srch_add_hdr = gtk_label_new(tr_full("添加自定义搜索引擎", "新增自訂搜尋引擎", "Add Custom Search Engine"));
+    gtk_style_context_add_class(gtk_widget_get_style_context(srch_add_hdr), "fx-section-title");
+    gtk_label_set_xalign(GTK_LABEL(srch_add_hdr), 0.0f);
+    gtk_box_pack_start(GTK_BOX(srch_mgr_card), srch_add_hdr, FALSE, FALSE, 0);
+
+    GtkWidget* add_grid = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(add_grid), 10);
+    gtk_grid_set_column_spacing(GTK_GRID(add_grid), 14);
+
+    GtkWidget* cname_lbl = gtk_label_new(tr_full("搜索引擎名称", "搜尋引擎名稱", "Engine Name"));
+    gtk_widget_set_halign(cname_lbl, GTK_ALIGN_START);
+    pref_custom_search_name_entry = gtk_entry_new();
+    gtk_widget_set_hexpand(pref_custom_search_name_entry, TRUE);
+    gtk_entry_set_placeholder_text(GTK_ENTRY(pref_custom_search_name_entry), "Google");
+
+    GtkWidget* curl_lbl = gtk_label_new(tr_full("引擎 URL", "引擎 URL", "Engine URL"));
+    gtk_widget_set_halign(curl_lbl, GTK_ALIGN_START);
+    pref_custom_search_url_entry = gtk_entry_new();
+    gtk_widget_set_hexpand(pref_custom_search_url_entry, TRUE);
+    gtk_entry_set_placeholder_text(GTK_ENTRY(pref_custom_search_url_entry), "https://www.google.com/search?q=");
+
+    GtkWidget* chome_lbl = gtk_label_new(tr_full("引擎首页", "引擎首頁", "Engine Homepage"));
+    gtk_widget_set_halign(chome_lbl, GTK_ALIGN_START);
+    pref_custom_search_home_entry = gtk_entry_new();
+    gtk_widget_set_hexpand(pref_custom_search_home_entry, TRUE);
+    gtk_entry_set_placeholder_text(GTK_ENTRY(pref_custom_search_home_entry), "https://www.google.com/");
+    g_signal_connect(pref_custom_search_name_entry, "populate-popup", G_CALLBACK(on_url_entry_populate_popup), NULL);
+    g_signal_connect(pref_custom_search_url_entry, "populate-popup", G_CALLBACK(on_url_entry_populate_popup), NULL);
+    g_signal_connect(pref_custom_search_home_entry, "populate-popup", G_CALLBACK(on_url_entry_populate_popup), NULL);
+
+    gtk_grid_attach(GTK_GRID(add_grid), cname_lbl, 0, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(add_grid), pref_custom_search_name_entry, 1, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(add_grid), curl_lbl, 0, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(add_grid), pref_custom_search_url_entry, 1, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(add_grid), chome_lbl, 0, 2, 1, 1);
+    gtk_grid_attach(GTK_GRID(add_grid), pref_custom_search_home_entry, 1, 2, 1, 1);
+    gtk_box_pack_start(GTK_BOX(srch_mgr_card), add_grid, FALSE, FALSE, 0);
+
+    pref_add_se_btn = gtk_button_new_with_label(tr_full("添加", "新增", "Add"));
+    gtk_widget_set_halign(pref_add_se_btn, GTK_ALIGN_END);
+    gtk_widget_set_can_focus(pref_add_se_btn, FALSE);
+    gtk_widget_set_sensitive(pref_add_se_btn, FALSE);
+
+    auto validate_add_se_cb = G_CALLBACK(+[](GtkEditable*, gpointer) {
+        if (!pref_add_se_btn) return;
+        std::string n = pref_custom_search_name_entry ? trim_whitespace(gtk_entry_get_text(GTK_ENTRY(pref_custom_search_name_entry))) : "";
+        std::string u = pref_custom_search_url_entry ? trim_whitespace(gtk_entry_get_text(GTK_ENTRY(pref_custom_search_url_entry))) : "";
+        std::string h = pref_custom_search_home_entry ? trim_whitespace(gtk_entry_get_text(GTK_ENTRY(pref_custom_search_home_entry))) : "";
+        gtk_widget_set_sensitive(pref_add_se_btn, !n.empty() && !u.empty() && !h.empty());
+    });
+    g_signal_connect(pref_custom_search_name_entry, "changed", validate_add_se_cb, NULL);
+    g_signal_connect(pref_custom_search_url_entry, "changed", validate_add_se_cb, NULL);
+    g_signal_connect(pref_custom_search_home_entry, "changed", validate_add_se_cb, NULL);
+
+    g_signal_connect(pref_add_se_btn, "clicked", G_CALLBACK(+[](GtkWidget*, gpointer) {
+        std::string name = pref_custom_search_name_entry ? trim_whitespace(gtk_entry_get_text(GTK_ENTRY(pref_custom_search_name_entry))) : "";
+        std::string url = pref_custom_search_url_entry ? trim_whitespace(gtk_entry_get_text(GTK_ENTRY(pref_custom_search_url_entry))) : "";
+        std::string home = pref_custom_search_home_entry ? trim_whitespace(gtk_entry_get_text(GTK_ENTRY(pref_custom_search_home_entry))) : "";
+        if (name.empty() || url.empty() || home.empty()) {
+            update_status_text(tr_full("请完整填写搜索引擎名称、引擎 URL 和引擎首页", "請完整填寫搜尋引擎名稱、引擎 URL 與引擎首頁", "Please fill in engine name, search URL, and homepage"), TRUE);
+            return;
+        }
+        int max_num = 0;
+        for (const auto& ce : custom_search_engines) {
+            if (ce.id.rfind("custom_", 0) == 0) {
+                int v = atoi(ce.id.c_str() + 7);
+                if (v > max_num) max_num = v;
+            }
+        }
+        CustomSearchEngine item;
+        item.id = "custom_" + std::to_string(max_num + 1);
+        item.name = name;
+        item.search_url = url;
+        item.home_url = home;
+        custom_search_engines.push_back(item);
+        save_custom_search_engines();
+        if (pref_custom_search_name_entry) gtk_entry_set_text(GTK_ENTRY(pref_custom_search_name_entry), "");
+        if (pref_custom_search_url_entry) gtk_entry_set_text(GTK_ENTRY(pref_custom_search_url_entry), "");
+        if (pref_custom_search_home_entry) gtk_entry_set_text(GTK_ENTRY(pref_custom_search_home_entry), "");
+        if (pref_add_se_btn) gtk_widget_set_sensitive(pref_add_se_btn, FALSE);
+        rebuild_search_engines_ui();
+        update_status_text((std::string(tr_full("已添加搜索引擎: ", "已新增搜尋引擎: ", "Added search engine: ")) + name).c_str(), TRUE);
+    }), NULL);
+    gtk_box_pack_start(GTK_BOX(srch_mgr_card), pref_add_se_btn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(srch_box), srch_mgr_card, FALSE, FALSE, 0);
+    rebuild_search_engines_ui();
     gtk_stack_add_named(GTK_STACK(preferences_stack), srch_box, "search");
 
     // --- 分类 2: 隐私与安全 ---
@@ -3055,6 +4236,7 @@ void open_preferences_tab(const char* section_name) {
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(ad_scroll), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
     GtkWidget* ad_textview = gtk_text_view_new();
     gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(ad_textview), GTK_WRAP_WORD_CHAR);
+    g_signal_connect(ad_textview, "populate-popup", G_CALLBACK(on_textview_populate_popup), NULL);
     pref_ad_buf = gtk_text_view_get_buffer(GTK_TEXT_VIEW(ad_textview));
     gtk_text_buffer_set_text(pref_ad_buf, adblock_rules_text.c_str(), -1);
     g_signal_connect(pref_ad_buf, "changed", G_CALLBACK(+[](GtkTextBuffer*, gpointer) {
@@ -3106,35 +4288,74 @@ void open_preferences_tab(const char* section_name) {
     gtk_box_pack_start(GTK_BOX(priv_box), pref_priv_action_bar, FALSE, FALSE, 0);
     gtk_stack_add_named(GTK_STACK(preferences_stack), priv_box, "privacy");
 
-    // --- 分类 3: 高级与开发者 ---
+    // --- 分类 3: 高级 ---
     GtkWidget* dev_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 14);
-    GtkWidget* dev_title = gtk_label_new(tr_full("高级与开发者", "進階與開發者", "Advanced & Developer"));
+    GtkWidget* dev_title = gtk_label_new(tr_full("高级", "進階", "Advanced"));
     gtk_style_context_add_class(gtk_widget_get_style_context(dev_title), "fx-page-title");
     gtk_label_set_xalign(GTK_LABEL(dev_title), 0.0f);
     gtk_box_pack_start(GTK_BOX(dev_box), dev_title, FALSE, FALSE, 0);
 
     GtkWidget* dev_card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
     gtk_style_context_add_class(gtk_widget_get_style_context(dev_card), "fx-card");
-    pref_js_check = gtk_check_button_new_with_label(tr_full("启用 JavaScript 脚本引擎", "啟用 JavaScript 指令碼引擎", "Enable JavaScript"));
-    pref_webgl_check = gtk_check_button_new_with_label(tr_full("启用 WebGL 硬件图形渲染", "啟用 WebGL 硬體圖形算繪", "Enable WebGL"));
+
+    pref_js_check = gtk_check_button_new_with_label(tr_full("启用 JavaScript", "啟用 JavaScript", "Enable JavaScript"));
+    pref_webgl_check = gtk_check_button_new_with_label(tr_full("启用 WebGL", "啟用 WebGL", "Enable WebGL"));
+    pref_smooth_scroll_check = gtk_check_button_new_with_label(tr_full("启用平滑滚动", "啟用平滑捲動", "Enable smooth scrolling"));
+    pref_auto_images_check = gtk_check_button_new_with_label(tr_full("自动加载网页图片", "自動載入網頁圖片", "Automatically load images"));
+    pref_dns_prefetch_check = gtk_check_button_new_with_label(tr_full("启用 DNS 预读取", "啟用 DNS 預讀", "Enable DNS prefetching"));
+    pref_page_cache_check = gtk_check_button_new_with_label(tr_full("启用页面往返缓存", "啟用頁面往返快取", "Enable back-forward page cache"));
+    pref_webaudio_check = gtk_check_button_new_with_label(tr_full("启用 WebAudio 音频引擎", "啟用 WebAudio 音訊引擎", "Enable WebAudio"));
+    pref_inspector_check = gtk_check_button_new_with_label(tr_full("启用网页右键“检查元素”", "啟用網頁右鍵「檢查元素」", "Enable Inspect Element in context menu"));
+    pref_sniffer_check = gtk_check_button_new_with_label(tr_full("启用网页资源嗅探", "啟用網頁資源嗅探", "Enable resource sniffer"));
+
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(pref_js_check), javascript_enabled);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(pref_webgl_check), webgl_enabled);
-    g_signal_connect(pref_js_check, "toggled", G_CALLBACK(+[](GtkToggleButton*, gpointer) {
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(pref_smooth_scroll_check), smooth_scrolling_enabled);
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(pref_auto_images_check), auto_load_images);
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(pref_dns_prefetch_check), dns_prefetch_enabled);
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(pref_page_cache_check), page_cache_enabled);
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(pref_webaudio_check), webaudio_enabled);
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(pref_inspector_check), developer_extras_enabled);
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(pref_sniffer_check), resource_sniffer_enabled);
+
+    auto on_adv_toggle = G_CALLBACK(+[](GtkToggleButton*, gpointer) {
         if (!pref_syncing_ui) update_pref_action_bars_visibility();
-    }), NULL);
-    g_signal_connect(pref_webgl_check, "toggled", G_CALLBACK(+[](GtkToggleButton*, gpointer) {
-        if (!pref_syncing_ui) update_pref_action_bars_visibility();
-    }), NULL);
+    });
+    g_signal_connect(pref_js_check, "toggled", on_adv_toggle, NULL);
+    g_signal_connect(pref_webgl_check, "toggled", on_adv_toggle, NULL);
+    g_signal_connect(pref_smooth_scroll_check, "toggled", on_adv_toggle, NULL);
+    g_signal_connect(pref_auto_images_check, "toggled", on_adv_toggle, NULL);
+    g_signal_connect(pref_dns_prefetch_check, "toggled", on_adv_toggle, NULL);
+    g_signal_connect(pref_page_cache_check, "toggled", on_adv_toggle, NULL);
+    g_signal_connect(pref_webaudio_check, "toggled", on_adv_toggle, NULL);
+    g_signal_connect(pref_inspector_check, "toggled", on_adv_toggle, NULL);
+    g_signal_connect(pref_sniffer_check, "toggled", on_adv_toggle, NULL);
+
     gtk_box_pack_start(GTK_BOX(dev_card), pref_js_check, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(dev_card), pref_webgl_check, FALSE, FALSE, 0);
-
+    gtk_box_pack_start(GTK_BOX(dev_card), pref_smooth_scroll_check, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(dev_card), pref_auto_images_check, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(dev_card), pref_dns_prefetch_check, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(dev_card), pref_page_cache_check, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(dev_card), pref_webaudio_check, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(dev_card), pref_inspector_check, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(dev_card), pref_sniffer_check, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(dev_box), dev_card, FALSE, FALSE, 0);
 
     pref_dev_action_bar = create_pref_action_bar(G_CALLBACK(+[](GtkWidget*, gpointer) {
         if (pref_js_check) javascript_enabled = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(pref_js_check));
         if (pref_webgl_check) webgl_enabled = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(pref_webgl_check));
+        if (pref_smooth_scroll_check) smooth_scrolling_enabled = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(pref_smooth_scroll_check));
+        if (pref_auto_images_check) auto_load_images = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(pref_auto_images_check));
+        if (pref_dns_prefetch_check) dns_prefetch_enabled = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(pref_dns_prefetch_check));
+        if (pref_page_cache_check) page_cache_enabled = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(pref_page_cache_check));
+        if (pref_webaudio_check) webaudio_enabled = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(pref_webaudio_check));
+        if (pref_inspector_check) developer_extras_enabled = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(pref_inspector_check));
+        if (pref_sniffer_check) resource_sniffer_enabled = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(pref_sniffer_check));
         save_settings();
+        apply_sniffer_user_scripts();
         apply_web_settings_to_all_tabs(false);
+        update_navigation_state();
         update_pref_action_bars_visibility();
         update_status_text(tr_full("高级设置已应用", "進階設定已套用", "Advanced settings applied"), TRUE);
     }));
@@ -3203,6 +4424,52 @@ void open_preferences_tab(const char* section_name) {
     }), NULL);
     gtk_box_pack_start(GTK_BOX(about_card), about_lbl, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(about_box), about_card, FALSE, FALSE, 0);
+
+    // 浏览器内核信息卡片（动态调用 API 查询版本与内核 Logo）
+    GtkWidget* kernel_card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+    gtk_style_context_add_class(gtk_widget_get_style_context(kernel_card), "fx-card");
+    GtkWidget* kernel_hdr = gtk_label_new(tr_full("浏览器内核信息", "瀏覽器核心資訊", "Browser Engine Info"));
+    gtk_style_context_add_class(gtk_widget_get_style_context(kernel_hdr), "fx-section-title");
+    gtk_label_set_xalign(GTK_LABEL(kernel_hdr), 0.0f);
+    gtk_box_pack_start(GTK_BOX(kernel_card), kernel_hdr, FALSE, FALSE, 0);
+
+    GtkWidget* kernel_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 14);
+    GtkIconTheme* icon_theme = gtk_icon_theme_get_default();
+    GtkWidget* kernel_logo_w = nullptr;
+    if (icon_theme) {
+        const char* theme_names[] = {"webkit", "web-browser", "applications-internet", NULL};
+        for (int i = 0; theme_names[i]; ++i) {
+            if (gtk_icon_theme_has_icon(icon_theme, theme_names[i])) {
+                GdkPixbuf* kpb = gtk_icon_theme_load_icon(icon_theme, theme_names[i], 48, GTK_ICON_LOOKUP_USE_BUILTIN, NULL);
+                if (kpb) {
+                    kernel_logo_w = gtk_image_new_from_pixbuf(kpb);
+                    g_object_unref(kpb);
+                    break;
+                }
+            }
+        }
+    }
+    if (!kernel_logo_w) kernel_logo_w = create_vector_icon(ICON_WEBKIT_LOGO, 48);
+    gtk_box_pack_start(GTK_BOX(kernel_row), kernel_logo_w, FALSE, FALSE, 0);
+
+    WebKitSettings* tmp_ws = webkit_settings_new();
+    const gchar* ua_str = tmp_ws ? webkit_settings_get_user_agent(tmp_ws) : "";
+    char kbuf[1024];
+    snprintf(kbuf, sizeof(kbuf),
+        "%s: WebKitGTK %u.%u.%u\n%s: GTK %u.%u.%u\nUser-Agent: %s",
+        tr_full("渲染内核", "算繪核心", "Rendering Engine"),
+        webkit_get_major_version(), webkit_get_minor_version(), webkit_get_micro_version(),
+        tr_full("界面工具包", "介面工具包", "UI Toolkit"),
+        gtk_get_major_version(), gtk_get_minor_version(), gtk_get_micro_version(),
+        ua_str ? ua_str : "");
+    if (tmp_ws) g_object_unref(tmp_ws);
+    GtkWidget* kernel_lbl = gtk_label_new(kbuf);
+    gtk_label_set_xalign(GTK_LABEL(kernel_lbl), 0.0f);
+    gtk_label_set_line_wrap(GTK_LABEL(kernel_lbl), TRUE);
+    gtk_label_set_selectable(GTK_LABEL(kernel_lbl), TRUE);
+    gtk_box_pack_start(GTK_BOX(kernel_row), kernel_lbl, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(kernel_card), kernel_row, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(about_box), kernel_card, FALSE, FALSE, 0);
     gtk_stack_add_named(GTK_STACK(preferences_stack), about_box, "about");
 
     g_signal_connect(preferences_sidebar, "row-selected", G_CALLBACK(+[](GtkListBox*, GtkListBoxRow* row, gpointer) {
@@ -3225,6 +4492,10 @@ void open_preferences_tab(const char* section_name) {
         if (idx == 2) refresh_cookies_from_manager();
         if (name) {
             gtk_stack_set_visible_child_name(GTK_STACK(preferences_stack), name);
+            if (pref_right_scroll && GTK_IS_SCROLLED_WINDOW(pref_right_scroll)) {
+                GtkAdjustment* vadj = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(pref_right_scroll));
+                if (vadj) gtk_adjustment_set_value(vadj, 0.0);
+            }
         }
         const bool is_data = (idx == 4 || idx == 5);
         if (pref_data_toolbar) gtk_widget_set_visible(pref_data_toolbar, is_data);
@@ -3246,12 +4517,19 @@ void open_preferences_tab(const char* section_name) {
         preferences_page = nullptr;
         preferences_sidebar = nullptr;
         preferences_stack = nullptr;
+        pref_right_scroll = nullptr;
         pref_data_toolbar = nullptr;
         pref_theme_combo = nullptr;
         pref_lang_combo = nullptr;
         pref_zoom_scale = nullptr;
+        pref_download_dir_entry = nullptr;
         pref_gen_action_bar = nullptr;
         pref_search_combo = nullptr;
+        pref_search_list_box = nullptr;
+        pref_custom_search_name_entry = nullptr;
+        pref_custom_search_url_entry = nullptr;
+        pref_custom_search_home_entry = nullptr;
+        pref_add_se_btn = nullptr;
         pref_srch_action_bar = nullptr;
         pref_cookie_combo = nullptr;
         pref_media_check = nullptr;
@@ -3261,6 +4539,13 @@ void open_preferences_tab(const char* section_name) {
         pref_priv_action_bar = nullptr;
         pref_js_check = nullptr;
         pref_webgl_check = nullptr;
+        pref_smooth_scroll_check = nullptr;
+        pref_auto_images_check = nullptr;
+        pref_dns_prefetch_check = nullptr;
+        pref_page_cache_check = nullptr;
+        pref_webaudio_check = nullptr;
+        pref_inspector_check = nullptr;
+        pref_sniffer_check = nullptr;
         pref_dev_action_bar = nullptr;
         adblock_status_lbl = nullptr;
         history_store = bookmark_store = cookie_store = nullptr;
@@ -3320,6 +4605,7 @@ void build_ui(GtkWidget* window) {
     mkdir((base_dir + "/cookies").c_str(), 0777);
     mkdir((base_dir + "/cache").c_str(), 0777);
 
+    load_custom_search_engines();
     load_settings();
     ensure_dir_recursive(download_dir);
     apply_app_theme();
@@ -3348,6 +4634,80 @@ void build_ui(GtkWidget* window) {
     g_signal_connect(web_context, "download-started", G_CALLBACK(on_download_started), NULL);
 
     user_content_manager = webkit_user_content_manager_new();
+    webkit_user_content_manager_register_script_message_handler(user_content_manager, "wb_save_data_url");
+    webkit_user_content_manager_register_script_message_handler(user_content_manager, "wb_sniffed_resources");
+    g_signal_connect(user_content_manager, "script-message-received::wb_sniffed_resources",
+        G_CALLBACK(+[](WebKitUserContentManager*, WebKitJavascriptResult* js_result, gpointer) {
+            if (!resource_sniffer_enabled || !js_result || !notebook || !GTK_IS_NOTEBOOK(notebook)) return;
+            JSCValue* val = webkit_javascript_result_get_js_value(js_result);
+            if (!val || !jsc_value_is_string(val)) return;
+            gchar* json_str = jsc_value_to_string(val);
+            if (!json_str) return;
+            std::string s(json_str);
+            g_free(json_str);
+
+            auto extract_str = [&](const std::string& obj, const std::string& key, size_t start_pos, size_t& out_end) -> std::string {
+                std::string pat = "\"" + key + "\":\"";
+                size_t p = obj.find(pat, start_pos);
+                if (p == std::string::npos) return "";
+                p += pat.size();
+                std::string res;
+                while (p < obj.size()) {
+                    char c = obj[p++];
+                    if (c == '\\' && p < obj.size()) {
+                        char nx = obj[p++];
+                        if (nx == '"' || nx == '\\' || nx == '/') res.push_back(nx);
+                        else res.push_back(nx);
+                    } else if (c == '"') {
+                        break;
+                    } else {
+                        res.push_back(c);
+                    }
+                }
+                out_end = p;
+                return res;
+            };
+
+            size_t pos = 0;
+            std::string page_url = extract_str(s, "pageUrl", 0, pos);
+            if (page_url.empty()) return;
+
+            WebKitWebView* target_wv = nullptr;
+            const int n = gtk_notebook_get_n_pages(GTK_NOTEBOOK(notebook));
+            for (int i = 0; i < n; ++i) {
+                GtkWidget* page = gtk_notebook_get_nth_page(GTK_NOTEBOOK(notebook), i);
+                GtkWidget* wv_w = get_webview_from_page(page);
+                if (wv_w && WEBKIT_IS_WEB_VIEW(wv_w)) {
+                    const gchar* cur = webkit_web_view_get_uri(WEBKIT_WEB_VIEW(wv_w));
+                    if (cur && page_url == cur) {
+                        target_wv = WEBKIT_WEB_VIEW(wv_w);
+                        break;
+                    }
+                }
+            }
+            if (!target_wv) return;
+
+            while (pos < s.size()) {
+                size_t u_end = 0;
+                std::string u = extract_str(s, "url", pos, u_end);
+                if (u.empty()) break;
+                size_t k_end = 0;
+                std::string k = extract_str(s, "kind", u_end, k_end);
+                record_sniffed_resource(target_wv, u, k, 0);
+                pos = std::max(u_end, k_end);
+            }
+        }), NULL);
+    g_signal_connect(user_content_manager, "script-message-received::wb_save_data_url",
+        G_CALLBACK(+[](WebKitUserContentManager*, WebKitJavascriptResult* js_result, gpointer) {
+            if (!js_result) return;
+            JSCValue* val = webkit_javascript_result_get_js_value(js_result);
+            if (!val || !jsc_value_is_string(val)) return;
+            gchar* data_url = jsc_value_to_string(val);
+            if (data_url) {
+                save_data_image_uri(data_url);
+                g_free(data_url);
+            }
+        }), NULL);
     webkit_user_content_manager_register_script_message_handler(user_content_manager, "wb_page_loaded");
     g_signal_connect(user_content_manager, "script-message-received::wb_page_loaded",
         G_CALLBACK(+[](WebKitUserContentManager*, WebKitJavascriptResult* js_result, gpointer) {
@@ -3377,19 +4737,7 @@ void build_ui(GtkWidget* window) {
             }
             g_free(loaded_uri);
         }), NULL);
-    {
-        const char* load_hook_js =
-            "window.addEventListener('load', function() {"
-            "  try { window.webkit.messageHandlers.wb_page_loaded.postMessage(location.href); } catch(e) {}"
-            "}, { once: true });";
-        WebKitUserScript* load_script = webkit_user_script_new(
-            load_hook_js,
-            WEBKIT_USER_CONTENT_INJECT_TOP_FRAME,
-            WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_END,
-            NULL, NULL);
-        webkit_user_content_manager_add_script(user_content_manager, load_script);
-        webkit_user_script_unref(load_script);
-    }
+    apply_sniffer_user_scripts();
     content_filter_store = webkit_user_content_filter_store_new((base_dir + "/adblock").c_str());
     load_adblock_rules();
     apply_adblock_rules();
@@ -3463,7 +4811,17 @@ void build_ui(GtkWidget* window) {
     gtk_box_pack_start(GTK_BOX(toolbar), btn_back, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(toolbar), btn_forward, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(toolbar), btn_refresh, FALSE, FALSE, 0);
+    btn_sniffer_menu = gtk_menu_button_new();
+    gtk_container_add(GTK_CONTAINER(btn_sniffer_menu), create_vector_icon(ICON_DOWNLOAD, 18));
+    gtk_button_set_relief(GTK_BUTTON(btn_sniffer_menu), GTK_RELIEF_NONE);
+    gtk_widget_set_can_focus(btn_sniffer_menu, FALSE);
+    gtk_style_context_add_class(gtk_widget_get_style_context(btn_sniffer_menu), "flat");
+    gtk_widget_show_all(btn_sniffer_menu);
+    gtk_widget_set_no_show_all(btn_sniffer_menu, TRUE);
+    gtk_widget_set_visible(btn_sniffer_menu, resource_sniffer_enabled);
+
     gtk_box_pack_start(GTK_BOX(toolbar), url_entry, TRUE, TRUE, 4);
+    gtk_box_pack_start(GTK_BOX(toolbar), btn_sniffer_menu, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(toolbar), btn_bookmark, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(toolbar), btn_bookmarks_menu, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(toolbar), btn_history_menu, FALSE, FALSE, 0);
@@ -3501,6 +4859,45 @@ void build_ui(GtkWidget* window) {
     g_signal_connect(bm_popover_manage_btn, "clicked", G_CALLBACK(+[](GtkWidget*, gpointer) {
         if (bm_popover) gtk_widget_hide(bm_popover);
         open_preferences_tab("bookmarks");
+    }), NULL);
+
+    // 资源嗅探弹出面板
+    sniffer_popover = gtk_popover_new(btn_sniffer_menu);
+    gtk_widget_set_size_request(sniffer_popover, 380, 360);
+    GtkWidget* sniffer_pop_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_container_set_border_width(GTK_CONTAINER(sniffer_pop_box), 10);
+    GtkWidget* sniffer_pop_header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    sniffer_popover_title = gtk_label_new(tr_full("资源嗅探", "資源嗅探", "Resource Sniffer"));
+    gtk_widget_set_halign(sniffer_popover_title, GTK_ALIGN_START);
+    sniffer_popover_refresh_btn = gtk_button_new();
+    gtk_container_add(GTK_CONTAINER(sniffer_popover_refresh_btn), create_vector_icon(ICON_REFRESH, 14));
+    gtk_button_set_relief(GTK_BUTTON(sniffer_popover_refresh_btn), GTK_RELIEF_NONE);
+    gtk_widget_set_can_focus(sniffer_popover_refresh_btn, FALSE);
+    gtk_style_context_add_class(gtk_widget_get_style_context(sniffer_popover_refresh_btn), "flat");
+    gtk_widget_set_tooltip_text(sniffer_popover_refresh_btn, tr_full("刷新嗅探列表", "重新整理嗅探列表", "Refresh sniffed resources"));
+    gtk_box_pack_start(GTK_BOX(sniffer_pop_header), sniffer_popover_title, TRUE, TRUE, 0);
+    gtk_box_pack_end(GTK_BOX(sniffer_pop_header), sniffer_popover_refresh_btn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(sniffer_pop_box), sniffer_pop_header, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(sniffer_pop_box), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 0);
+
+    GtkWidget* sniffer_pop_scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sniffer_pop_scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_vexpand(sniffer_pop_scroll, TRUE);
+    sniffer_popover_listbox = gtk_list_box_new();
+    gtk_list_box_set_selection_mode(GTK_LIST_BOX(sniffer_popover_listbox), GTK_SELECTION_NONE);
+    gtk_container_add(GTK_CONTAINER(sniffer_pop_scroll), sniffer_popover_listbox);
+    gtk_box_pack_start(GTK_BOX(sniffer_pop_box), sniffer_pop_scroll, TRUE, TRUE, 0);
+    gtk_widget_show_all(sniffer_pop_box);
+    gtk_container_add(GTK_CONTAINER(sniffer_popover), sniffer_pop_box);
+    gtk_menu_button_set_popover(GTK_MENU_BUTTON(btn_sniffer_menu), sniffer_popover);
+
+    g_signal_connect(sniffer_popover, "show", G_CALLBACK(+[](GtkWidget*, gpointer) {
+        rebuild_sniffer_popover_ui();
+    }), NULL);
+    g_signal_connect(sniffer_popover_refresh_btn, "clicked", G_CALLBACK(+[](GtkWidget*, gpointer) {
+        GtkWidget* wv = get_current_webview();
+        if (wv) run_dom_sniffer_script(WEBKIT_WEB_VIEW(wv));
+        rebuild_sniffer_popover_ui();
     }), NULL);
 
     // 历史记录弹出面板
@@ -3590,6 +4987,9 @@ int main(int argc, char* argv[]) {
     g_setenv("NO_AT_BRIDGE", "1", TRUE);
 
     gtk_init(&argc, &argv);
+    if (GtkSettings* gs = gtk_settings_get_default()) {
+        g_object_set(gs, "gtk-enable-tooltips", FALSE, NULL);
+    }
     GtkWidget* window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(window), "WebBrowser");
     gtk_window_set_default_size(GTK_WINDOW(window), 1000, 720);
